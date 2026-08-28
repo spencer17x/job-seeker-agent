@@ -128,8 +128,8 @@ export async function queueBossCandidates(input: {
 }) {
   const [postings, recommendations, applications] = await Promise.all([
     input.store.list('jobPostings'),
-    input.store.list('jobRecommendations'),
-    input.store.list('applicationRecords')
+    input.store.listByIndex('jobRecommendations', 'bySourceDraftId', input.sourceDraftId),
+    input.store.listByIndex('applicationRecords', 'bySourceDraftId', input.sourceDraftId)
   ])
   const planned = planBossCandidates({
     postings,
@@ -286,7 +286,7 @@ export async function analyzeBossCandidateQueue(input: {
     throw new TypeError('BOSS analysis batch size must be between 1 and 10')
   }
   const [applications, postings] = await Promise.all([
-    input.store.list('applicationRecords'),
+    input.store.listByIndex('applicationRecords', 'bySourceDraftId', input.sourceDraftId),
     input.store.list('jobPostings')
   ])
   const postingById = new Map(postings.map((posting) => [posting.id, posting]))

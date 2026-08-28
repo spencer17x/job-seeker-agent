@@ -28,7 +28,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false
   }
   if (message?.action === 'job-agent-page-ready') {
-    dispatchPendingCycle().catch(() => undefined)
+    dispatchPendingCycle(sender.tab?.id).catch(() => undefined)
     return false
   }
   if (typeof message?.requestId !== 'string') return false
@@ -217,7 +217,7 @@ async function queueScheduledCycle(reason) {
   return next
 }
 
-async function dispatchPendingCycle() {
+async function dispatchPendingCycle(preferredTabId) {
   let runtime = await readJobAgentRuntime()
   if (!runtime.enabled) return runtime
   const now = new Date().toISOString()
@@ -231,7 +231,8 @@ async function dispatchPendingCycle() {
       'https://job-seeker-agent-phi.vercel.app/*'
     ]
   })
-  const tab = tabs.find((candidate) => candidate.id)
+  const jobAgentTabs = tabs.filter((candidate) => candidate.id && isJobAgentTabUrl(candidate.url))
+  const tab = jobAgentTabs.find((candidate) => candidate.id === preferredTabId) ?? jobAgentTabs[0]
   if (!tab?.id) {
     runtime = ResumeOsJobRuntime.markUnavailable(runtime, 'page-closed', now)
     await writeJobAgentRuntime(runtime)
@@ -255,6 +256,21 @@ async function dispatchPendingCycle() {
     runtime = ResumeOsJobRuntime.markUnavailable(runtime, 'dispatch-failed', new Date().toISOString())
     await writeJobAgentRuntime(runtime)
     return runtime
+  }
+}
+
+function isJobAgentTabUrl(value) {
+  if (typeof value !== 'string') return false
+  try {
+    const url = new URL(value)
+    const local = url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname)
+    const production = url.protocol === 'https:' && [
+      'resume-os-phi.vercel.app',
+      'job-seeker-agent-phi.vercel.app'
+    ].includes(url.hostname)
+    return (local || production) && /^\/(?:zh|en)\/jobs(?:\/|$)/u.test(url.pathname)
+  } catch {
+    return false
   }
 }
 

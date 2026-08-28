@@ -91,20 +91,19 @@ export async function loadApplicationPacket(input: {
 }
 
 async function buildApplicationPacket(
-  store: Pick<DomainStoreTransaction<(typeof packetStoreNames)[number]>, 'get' | 'list'>,
+  store: Pick<DomainStoreTransaction<(typeof packetStoreNames)[number]>, 'get' | 'list' | 'listByIndex'>,
   recordId: string,
   resume: ResumeData
 ): Promise<ApplicationPacket> {
   const record = await store.get('applicationRecords', recordId)
   if (!record) throw new ApplicationRecordError('NOT_FOUND')
-  const [posting, recommendations, runs, variants, requirements, facts, targetJobs] = await Promise.all([
+  const [posting, recommendations, runs, variants, facts, targetJob] = await Promise.all([
     store.get('jobPostings', record.postingId),
-    store.list('jobRecommendations'),
-    store.list('optimizationRuns'),
-    store.list('resumeVariants'),
-    store.list('jobRequirements'),
+    store.listByIndex('jobRecommendations', 'bySourceDraftId', record.sourceDraftId),
+    store.listByIndex('optimizationRuns', 'bySourceDraftId', record.sourceDraftId),
+    store.listByIndex('resumeVariants', 'bySourceDraftId', record.sourceDraftId),
     store.list('careerFacts'),
-    store.list('targetJobs')
+    record.targetJobId ? store.get('targetJobs', record.targetJobId) : Promise.resolve(undefined)
   ])
   if (!posting) throw new ApplicationRecordError('NOT_FOUND')
   const recommendation = recommendations.find((item) => (
@@ -115,9 +114,11 @@ async function buildApplicationPacket(
   )).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
   const run = candidateRuns.find((item) => item.stage === 'applied') ?? candidateRuns[0] ?? null
   const variant = variants.find((item) => item.id === (record.resumeVariantId ?? run?.appliedVariantId)) ?? null
-  const targetJob = targetJobs.find((item) => item.id === record.targetJobId)
   const requirementIds = new Set(run?.requirementMatches.map((match) => match.requirementId) ?? [])
-  const runRequirements = requirements.filter((item) => requirementIds.has(item.id))
+  const runRequirements = run
+    ? (await store.listByIndex('jobRequirements', 'byJobId', run.targetJobId))
+      .filter((item) => requirementIds.has(item.id))
+    : []
   const currentWorkflowFingerprint = run && targetJob && runRequirements.length === requirementIds.size
     ? fingerprintOptimizationInputs({
         sourceDraftId: record.sourceDraftId,
@@ -247,8 +248,11 @@ export async function prepareReadyBossApplicationPackets(input: {
   resume: ResumeData
   now: () => string
 }) {
-  const applications = (await input.store.list('applicationRecords'))
-    .filter((application) => application.sourceDraftId === input.sourceDraftId)
+  const applications = await input.store.listByIndex(
+    'applicationRecords',
+    'bySourceDraftId',
+    input.sourceDraftId
+  )
   const results = await Promise.allSettled(applications.map((application) => (
     loadApplicationPacket({ store: input.store, recordId: application.id, resume: input.resume })
   )))

@@ -1,6 +1,6 @@
 'use client'
 
-import { Check, Database, Pencil, Save, Trash2, X } from 'lucide-react'
+import { Check, Database, Pencil, RefreshCw, Save, Trash2, X } from 'lucide-react'
 import { useTranslations } from 'next-intl'
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { DomainStoreError, type CareerFact, type EvidenceSource } from '@/lib/agent/domain-store'
@@ -39,6 +39,7 @@ export function CareerEvidencePanel({
   const [pendingFactId, setPendingFactId] = useState('')
   const [editingFactId, setEditingFactId] = useState('')
   const [editingText, setEditingText] = useState('')
+  const [retryPending, setRetryPending] = useState(false)
   const isTrustedDraft = draft?.source === 'paste' || draft?.source === 'upload'
   const stateIsCurrent = Boolean(
     draft
@@ -85,6 +86,21 @@ export function CareerEvidencePanel({
     }
   }
 
+  async function retryImport() {
+    if (!draft || !isTrustedDraft) return
+    setRetryPending(true)
+    setNotice('')
+    try {
+      await service.importResume({ draftId: draft.id, label: draft.name, data: draft.data })
+      const evidence = await service.listForDraft(draft.id)
+      setState({ draftId: draft.id, refreshVersion, ...evidence })
+    } catch {
+      setNotice(t('retryError'))
+    } finally {
+      setRetryPending(false)
+    }
+  }
+
   async function deleteFact(fact: CareerFact) {
     setPendingFactId(fact.id)
     setNotice('')
@@ -124,7 +140,7 @@ export function CareerEvidencePanel({
   }
 
   return (
-    <section className="resume-studio__evidence" aria-label={t('title')} aria-busy={loading}>
+    <section className="resume-studio__evidence" aria-label={t('title')} aria-busy={loading || retryPending}>
       <header>
         <span><Database aria-hidden="true" size={14} />{t('eyebrow')}</span>
         <h2>{t('title')}</h2>
@@ -140,7 +156,12 @@ export function CareerEvidencePanel({
         <p className="resume-studio__evidence-empty" role="status">{t('loading')}</p>
       ) : null}
       {draft && isTrustedDraft && !loading && !source ? (
-        <p className="resume-studio__evidence-empty">{t('empty')}</p>
+        <div className="resume-studio__evidence-empty-action">
+          <p className="resume-studio__evidence-empty">{t('empty')}</p>
+          <button type="button" disabled={retryPending} onClick={() => void retryImport()}>
+            <RefreshCw aria-hidden="true" size={13} />{retryPending ? t('retrying') : t('retryImport')}
+          </button>
+        </div>
       ) : null}
 
       {source ? (

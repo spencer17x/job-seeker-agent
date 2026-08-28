@@ -47,4 +47,58 @@ describe('JobSeeker Agent BOSS extension background', () => {
     expect(opened.searchParams.get('query')).toBe('平台工程师')
     expect(remove).toHaveBeenCalledWith(42)
   })
+
+  it('dispatches a pending cycle only to the Job Agent tab that reported ready', async () => {
+    let listener: ((message: unknown, sender: { tab?: { id?: number } }, respond: (value: unknown) => void) => boolean) | undefined
+    const sendMessage = vi.fn(async () => undefined)
+    const runtime = {
+      enabled: true,
+      pendingCycles: [{ id: 'cycle-1', scheduledAt: '2026-08-01T08:00:00.000Z', reason: 'scheduled', missedIntervals: 0, state: 'pending', attempts: 0 }]
+    }
+    const chrome = {
+      runtime: {
+        getManifest: () => ({ version: '0.1.0' }),
+        onMessage: { addListener: (value: typeof listener) => { listener = value } },
+        onStartup: { addListener: vi.fn() }
+      },
+      tabs: {
+        query: async () => [
+          { id: 1, url: 'http://127.0.0.1:3001/en/studio' },
+          { id: 2, url: 'http://127.0.0.1:3001/en/jobs/opportunities' }
+        ],
+        sendMessage,
+        create: vi.fn(), remove: vi.fn(), get: vi.fn(),
+        onUpdated: { addListener: vi.fn(), removeListener: vi.fn() }
+      },
+      alarms: { onAlarm: { addListener: vi.fn() }, clear: vi.fn(), create: vi.fn() },
+      storage: {
+        local: {
+          set: vi.fn(async () => undefined),
+          get: vi.fn(async () => ({ jobAgentRuntimeV1: runtime, jobAgentSchedule: { enabled: true, intervalMinutes: 15 } }))
+        }
+      },
+      notifications: { create: vi.fn(async () => 'notification-1') }
+    }
+    const ResumeOsJobRuntime = {
+      normalizeRuntime: (value: unknown) => value as typeof runtime,
+      nextDispatchable: (value: typeof runtime) => value.pendingCycles[0],
+      markDispatched: (value: typeof runtime) => value,
+      markUnavailable: (value: typeof runtime) => value,
+      publicStatus: (value: typeof runtime) => value,
+      configure: (value: typeof runtime) => value,
+      schedule: (value: typeof runtime) => value,
+      acknowledge: (value: typeof runtime) => value
+    }
+    runInNewContext(readFileSync('browser-extension/background.js', 'utf8'), {
+      chrome, ResumeOsJobRuntime, URL, Map, Set, Promise, Date, Math,
+      setTimeout: vi.fn(), clearTimeout: vi.fn()
+    })
+
+    expect(listener?.({ action: 'job-agent-page-ready' }, { tab: { id: 2 } }, vi.fn())).toBe(false)
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledWith(2, expect.objectContaining({
+      action: 'job-agent-wakeup',
+      cycle: expect.objectContaining({ id: 'cycle-1' })
+    })))
+    expect(sendMessage).not.toHaveBeenCalledWith(1, expect.anything())
+  })
 })

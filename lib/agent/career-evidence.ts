@@ -14,6 +14,8 @@ export type CareerEvidenceImport = {
   facts: CareerFact[]
 }
 
+export const CAREER_EVIDENCE_CHANGED_EVENT = 'job-seeker-agent-career-evidence-changed'
+
 export type DraftCareerEvidence = {
   source: EvidenceSource | null
   facts: CareerFact[]
@@ -137,6 +139,7 @@ export function createCareerEvidenceService(options: {
         }
       )
       if (invalidatedRuns > 0) announceWorkflowInputChange()
+      announceCareerEvidenceChange()
       return imported
     },
 
@@ -183,6 +186,7 @@ export function createCareerEvidenceService(options: {
         }
       )
       if (result.invalidatedRuns > 0) announceWorkflowInputChange()
+      announceCareerEvidenceChange()
       return result.fact
     },
 
@@ -214,6 +218,7 @@ export function createCareerEvidenceService(options: {
         }
       )
       if (result.invalidatedRuns > 0) announceWorkflowInputChange()
+      announceCareerEvidenceChange()
       return result.fact
     },
 
@@ -226,6 +231,7 @@ export function createCareerEvidenceService(options: {
       )
       if (invalidatedRuns > 0) announceWorkflowInputChange()
       await getStore().delete('careerFacts', factId)
+      announceCareerEvidenceChange()
     },
 
     assertSourceDraftCanBeDeleted(draftId) {
@@ -273,6 +279,10 @@ function announceWorkflowInputChange() {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(ACTIVE_WORKFLOW_CHANGED_EVENT))
   }
+}
+
+function announceCareerEvidenceChange() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(CAREER_EVIDENCE_CHANGED_EVENT))
 }
 
 function collectFactCandidates(data: ResumeData) {

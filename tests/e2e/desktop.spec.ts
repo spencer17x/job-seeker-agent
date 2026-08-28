@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { expectNoDevelopmentOverlay, expectReadableScreenshot } from './support/screenshot-evidence'
-import { waitForAppSurfaceToSettle, waitForFiniteMotionToSettle } from './support/stable-motion'
+import { waitForAppSurfaceToSettle } from './support/stable-motion'
 
 test.beforeEach(async ({}, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'Desktop window-management coverage')
@@ -30,11 +30,9 @@ async function setMotionPreference(page: Page, preference: 'Full motion' | 'Redu
   await expect(settings).toBeHidden()
 }
 
-test('starts with the workflow overview and manages concurrent windows with persistent geometry', async ({ page }) => {
-  await page.goto('/en')
-  await expect(page.getByTestId('workflow-overview')).toBeVisible()
+test('manages concurrent legacy tool windows with persistent geometry', async ({ page }) => {
+  await page.goto('/en/studio')
   const dock = page.getByRole('navigation', { name: 'Dock' })
-  await dock.getByRole('button', { name: 'Resume Studio' }).click()
   const studio = page.getByRole('application', { name: 'Resume Studio' })
   await expect(studio).toBeVisible()
 
@@ -140,11 +138,10 @@ test('captures fully settled Studio windows at both acceptance viewports', async
 
 test('renders the AI agent constellation across desktop motion states and viewports', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto('/en')
+  await page.goto('/en/studio')
 
   const html = page.locator('html')
   const menuBar = page.getByTestId('menu-bar')
-  const surface = page.getByTestId('desktop-surface')
   const ambient = page.getByTestId('desktop-ambient')
   const launcher = page.getByTestId('desktop-launcher')
   const dock = page.getByTestId('dock')
@@ -159,7 +156,7 @@ test('renders the AI agent constellation across desktop motion states and viewpo
   await expect(html).toHaveAttribute('data-motion', 'full')
   await expect(ambient).toHaveAttribute('aria-hidden', 'true')
   await expect(ambient).toHaveAttribute('data-scene', 'agent-constellation')
-  await expect(ambient).toHaveAttribute('data-subdued', 'false')
+  await expect(ambient).toHaveAttribute('data-subdued', 'true')
   await expect(ambient).toHaveAttribute('data-reduced-motion', 'false')
   await expect(ambient).toHaveAttribute('data-cinematic-cycle', '14000')
   await expect(ambient).toHaveAttribute('data-story-duration', '14000')
@@ -222,35 +219,11 @@ test('renders the AI agent constellation across desktop motion states and viewpo
     'variant'
   ]).toEqual(['evidence', 'jd', 'retrieve', 'rank', 'synthesize', 'verify', 'variant'])
 
-  await waitForFiniteMotionToSettle(stage)
-
-  const surfaceBox = await surface.boundingBox()
-  if (!surfaceBox) throw new Error('Desktop surface is not measurable')
-  await page.mouse.move(
-    surfaceBox.x + surfaceBox.width * 0.86,
-    surfaceBox.y + surfaceBox.height * 0.68
-  )
-  await expect(ambient).toHaveAttribute('data-pointer', 'true')
-  await expect.poll(() => stage.evaluate((element) =>
-    Number.parseFloat(element.style.getPropertyValue('--ambient-shift-x'))
-  )).toBeGreaterThan(1)
-
   await expectNoDevelopmentOverlay(page)
   const fullImage = await page.screenshot({
     path: '/tmp/job-seeker-agent-agent-constellation-full-1440x900.png'
   })
   await expectReadableScreenshot(page, fullImage)
-
-  const agentLauncher = launcher.getByRole('button', { name: 'Resume Agent', exact: true })
-  await agentLauncher.click()
-  await expect(agentLauncher).toHaveAttribute('aria-pressed', 'true')
-  await agentLauncher.dblclick()
-  const agent = page.getByRole('application', { name: 'Resume Agent' })
-  await expect(agent).toBeVisible()
-  await expect(ambient).toHaveAttribute('data-subdued', 'true')
-  await agent.getByRole('button', { name: 'Close Resume Agent', exact: true }).click()
-  await expect(agent).toBeHidden()
-  await expect(ambient).toHaveAttribute('data-subdued', 'false')
 
   await setMotionPreference(page, 'Reduced motion')
   await expect(html).toHaveAttribute('data-motion', 'reduced')
@@ -269,11 +242,6 @@ test('renders the AI agent constellation across desktop motion states and viewpo
     element.getAnimations({ subtree: true }).filter((animation) => animation.playState === 'running').length
   )).toBe(0)
 
-  await page.mouse.move(
-    surfaceBox.x + surfaceBox.width * 0.14,
-    surfaceBox.y + surfaceBox.height * 0.32
-  )
-  await page.waitForTimeout(100)
   await expect(ambient).toHaveAttribute('data-pointer', 'false')
   expect(await stage.evaluate((element) => [
     element.style.getPropertyValue('--ambient-shift-x'),

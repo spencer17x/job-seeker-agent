@@ -6,6 +6,7 @@ import { NextIntlClientProvider } from 'next-intl'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ResumeDraftProviderCore } from '@/components/resume-draft-provider'
 import { createDomainStore, type IndexedDbDomainStore } from '@/lib/agent/domain-store'
+import { careerEvidenceSourceId } from '@/lib/agent/career-evidence'
 import type { JobPosting, JobSearchProfile, JobSource } from '@/lib/jobs/job-domain'
 import { scoreJobRecommendation } from '@/lib/jobs/job-recommendation'
 import type { JobSourceAdapter } from '@/lib/jobs/sources'
@@ -70,11 +71,21 @@ function createStore() {
   return store
 }
 
-function trustedStorage() {
+function draftStorage() {
   const storage = new MemoryStorage()
   const draft = createResumeDraft(resume, { id: 'ada-draft', name: 'Ada Resume', source: 'paste' })
   writeDraftState(storage, { activeDraftId: draft.id, drafts: [draft] })
   return storage
+}
+
+async function trustedStorage(store: IndexedDbDomainStore) {
+  await store.put('evidenceSources', {
+    id: careerEvidenceSourceId('ada-draft'),
+    type: 'resume-import',
+    label: 'Ada Resume',
+    createdAt: now
+  })
+  return draftStorage()
 }
 
 function renderRadar(options: {
@@ -110,6 +121,25 @@ describe('JobRadarApp', () => {
     expect(screen.queryByText('Lever')).not.toBeInTheDocument()
   })
 
+  it('blocks matching when a trusted draft has no persisted Career Evidence', async () => {
+    mockPathname = '/jobs/opportunities'
+    const store = createStore()
+    renderRadar({ store, storage: draftStorage() })
+
+    expect(await screen.findByText(/Career Evidence is not saved locally/)).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Repair Career Evidence' })).toHaveAttribute('href', '/en/jobs/profile')
+    expect(screen.getByRole('button', { name: 'Run Agent now' })).toBeDisabled()
+  })
+
+  it('offers a route back to opportunities when no application packet exists', async () => {
+    mockPathname = '/jobs/applications'
+    const store = createStore()
+    renderRadar({ store })
+
+    expect(await screen.findByText(/No application packet exists yet/)).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Browse opportunities' })).toHaveAttribute('href', '/en/jobs/opportunities')
+  })
+
   it('derives the initial BOSS search preferences from the resume', async () => {
     mockPathname = '/jobs/preferences'
     const user = userEvent.setup()
@@ -136,7 +166,7 @@ describe('JobRadarApp', () => {
         }
       }
     })
-    renderRadar({ store, storage: trustedStorage(), createAdapter })
+    renderRadar({ store, storage: await trustedStorage(store), createAdapter })
 
     expect(await screen.findByDisplayValue('Platform Engineer')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Save profile' }))
@@ -151,7 +181,7 @@ describe('JobRadarApp', () => {
 
   it('requires saved job requirements before the Agent can start', async () => {
     const store = createStore()
-    renderRadar({ store, storage: trustedStorage() })
+    renderRadar({ store, storage: await trustedStorage(store) })
 
     expect(await screen.findByRole('heading', { name: 'Complete job setup first' })).toBeVisible()
     expect(screen.getByRole('navigation', { name: 'Job workspace navigation' }).querySelectorAll('a')).toHaveLength(7)
@@ -182,7 +212,7 @@ describe('JobRadarApp', () => {
     }
     window.addEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
     try {
-      renderRadar({ store, storage: trustedStorage() })
+      renderRadar({ store, storage: await trustedStorage(store) })
       expect(await screen.findByRole('heading', { name: 'BOSS adapter diagnostics' })).toBeVisible()
       expect(await screen.findByText('Conversation page')).toBeVisible()
       expect(screen.getByText('PDF resume upload selectors')).toBeVisible()
@@ -196,7 +226,7 @@ describe('JobRadarApp', () => {
     const user = userEvent.setup()
     const store = createStore()
     await store.put('jobSearchProfiles', { ...profile, platforms: ['boss'] })
-    renderRadar({ store, storage: trustedStorage() })
+    renderRadar({ store, storage: await trustedStorage(store) })
 
     expect(await screen.findByRole('heading', { name: 'Agent is paused' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Start Agent' }))
@@ -220,7 +250,7 @@ describe('JobRadarApp', () => {
       autoSendResume: true
     }))
 
-    renderRadar({ store, storage: trustedStorage() })
+    renderRadar({ store, storage: await trustedStorage(store) })
 
     expect(await screen.findByRole('heading', { name: 'Agent is ready' })).toBeVisible()
     await waitFor(() => expect(JSON.parse(
@@ -235,7 +265,7 @@ describe('JobRadarApp', () => {
       version: 1, enabled: true, autonomy: 'autopilot', platforms: ['boss'],
       learnFromReplies: true, learnFromOutcomes: true
     }))
-    renderRadar({ store, storage: trustedStorage() })
+    renderRadar({ store, storage: await trustedStorage(store) })
     expect(await screen.findByRole('heading', { name: 'Agent is ready' })).toBeVisible()
     expect(window.localStorage.getItem('job-seeker-agent:job-agent-preferences:v1')).not.toBeNull()
   })
@@ -269,7 +299,7 @@ describe('JobRadarApp', () => {
     }
     window.addEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
     try {
-      renderRadar({ store, storage: trustedStorage() })
+      renderRadar({ store, storage: await trustedStorage(store) })
       await waitFor(() => expect(configured).toContain(true), { timeout: 5_000 })
       await waitFor(() => expect(screen.getByText(/Platform Engineer.*Backend Engineer/)).toBeVisible())
       window.dispatchEvent(new CustomEvent(JOB_AGENT_WAKE_EVENT, { detail: {
@@ -297,7 +327,7 @@ describe('JobRadarApp', () => {
       facts: [],
       now
     }))
-    renderRadar({ store, storage: trustedStorage() })
+    renderRadar({ store, storage: await trustedStorage(store) })
 
     expect(await screen.findByRole('heading', { name: 'Platform Engineer' })).toBeVisible()
     expect(screen.getAllByText(/\d+%/).length).toBeGreaterThan(0)

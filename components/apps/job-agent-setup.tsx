@@ -63,14 +63,22 @@ export function JobAgentSetup({
   const saveOptions = async () => {
     setSaving(true)
     try {
-      if (await onSave()) setStep(5)
+      if (await onSave()) {
+        setDelegationConfirmed(false)
+        setStep(5)
+      }
     } finally {
       setSaving(false)
     }
   }
 
+  const selectAutonomy = (autonomy: JobAgentAutonomy) => {
+    onChange('autonomy', autonomy)
+    if (autonomy !== 'autopilot' && values.autoSendResume) onChange('autoSendResume', false)
+  }
+
   return <div className="job-setup">
-    <header className="job-setup__header"><div><span>{t('eyebrow')}</span><h2>{t('title')}</h2><p>{t('description')}</p></div><ol>{([1, 2, 3, 4, 5] as const).map((value) => <li key={value} data-active={step === value} data-complete={step > value}><span>{step > value ? <Check size={14} /> : value}</span><small>{t(`steps.${value}`)}</small></li>)}</ol></header>
+    <header className="job-setup__header"><div><span>{t('eyebrow')}</span><h2>{t('title')}</h2><p>{t('description')}</p></div><ol>{([1, 2, 3, 4, 5] as const).map((value) => <li key={value} aria-current={step === value ? 'step' : undefined} data-active={step === value} data-complete={step > value}><span>{step > value ? <Check size={14} /> : value}</span><small>{t(`steps.${value}`)}</small></li>)}</ol></header>
 
     {step === 1 ? <section className="job-setup__panel"><div className="job-setup__panel-heading"><div><h3>{t('goalTitle')}</h3><p>{t('goalHelp')}</p></div></div><label className="job-setup__goal">{t('goalDescription')}<textarea rows={6} value={values.goalDescription} onChange={(event) => onChange('goalDescription', event.target.value)} placeholder={t('goalPlaceholder')} /></label><footer><button type="button" className="job-button job-button--primary" disabled={!values.goalDescription.trim()} onClick={() => { onAnalyzeGoal(); setStep(2) }}>{t('analyzeGoal')}<ChevronRight size={15} /></button></footer></section> : null}
 
@@ -80,7 +88,27 @@ export function JobAgentSetup({
 
     {step === 4 ? <section className="job-setup__panel"><div className="job-setup__panel-heading"><div><h3>{t('optionsTitle')}</h3><p>{t('optionsHelp')}</p></div></div><div className="job-setup__fields"><TextField label={t('profileName')} value={values.profileName} onChange={(value) => onChange('profileName', value)} /><TextField label={t('titles')} value={values.titles} onChange={(value) => onChange('titles', value)} required /><TextField label={t('locations')} value={values.locations} onChange={(value) => onChange('locations', value)} /><div className="job-setup__salary"><TextField label={t('minimumSalary')} value={values.minimumSalary} onChange={(value) => onChange('minimumSalary', value)} type="number" /><TextField label={t('maximumSalary')} value={values.maximumSalary} onChange={(value) => onChange('maximumSalary', value)} type="number" /></div><TextField label={t('experienceLevels')} value={values.experienceLevels} onChange={(value) => onChange('experienceLevels', value)} /><TextField label={t('educationLevels')} value={values.educationLevels} onChange={(value) => onChange('educationLevels', value)} /><TextField label={t('industries')} value={values.industries} onChange={(value) => onChange('industries', value)} /><TextField label={t('preferredCompanies')} value={values.preferredCompanies} onChange={(value) => onChange('preferredCompanies', value)} /><TextField label={t('blockedCompanies')} value={values.blockedCompanies} onChange={(value) => onChange('blockedCompanies', value)} /><TextField label={t('companySizes')} value={values.companySizes} onChange={(value) => onChange('companySizes', value)} /><TextField label={t('financingStages')} value={values.financingStages} onChange={(value) => onChange('financingStages', value)} /><TextField label={t('requiredTerms')} value={values.requiredTerms} onChange={(value) => onChange('requiredTerms', value)} /><TextField label={t('preferredTerms')} value={values.preferredTerms} onChange={(value) => onChange('preferredTerms', value)} /><TextField label={t('excludedTerms')} value={values.excludedTerms} onChange={(value) => onChange('excludedTerms', value)} /><label>{t('maximumAgeDays')}<select value={values.maximumAgeDays} onChange={(event) => onChange('maximumAgeDays', Number(event.target.value))}>{[1, 3, 7, 14, 30].map((days) => <option key={days} value={days}>{t('days', { days })}</option>)}</select></label><CheckboxGroup label={t('workplaceTypes')} values={values.workplaceTypes} options={['remote', 'hybrid', 'onsite']} message={(value) => t(`workplace.${value}`)} onChange={(value) => onChange('workplaceTypes', value)} /><CheckboxGroup label={t('employmentTypes')} values={values.employmentTypes} options={['full-time', 'part-time', 'contract', 'internship', 'other']} message={(value) => t(`employment.${value}`)} onChange={(value) => onChange('employmentTypes', value)} /></div><footer><button type="button" className="job-button job-button--secondary" onClick={() => setStep(3)}><ChevronLeft size={15} />{t('back')}</button><button type="button" className="job-button job-button--primary" disabled={saving || !values.titles.trim()} onClick={() => void saveOptions()}>{saving ? t('saving') : t('saveOptions')}<ChevronRight size={15} /></button></footer></section> : null}
 
-    {step === 5 ? <section className="job-setup__panel"><div className="job-setup__panel-heading"><div><h3>{t('delegationTitle')}</h3><p>{t('delegationHelp')}</p></div></div><div className="job-setup__delegation"><label className="job-setup__check"><input type="checkbox" checked={delegationConfirmed} onChange={(event) => { const checked = event.target.checked; setDelegationConfirmed(checked); onChange('autonomy', checked ? 'autopilot' : 'approval'); onChange('autoSendResume', checked) }} /><span>{t('managedDelegation')}</span></label><label>{t('minimumMatchScore')}<input type="number" min="0" max="100" value={values.minimumMatchScore} onChange={(event) => onChange('minimumMatchScore', Number(event.target.value))} /></label><label>{t('dailyContactLimit')}<input type="number" min="1" max="100" value={values.dailyContactLimit} onChange={(event) => onChange('dailyContactLimit', Number(event.target.value))} /></label></div><div className="job-setup__boundary"><strong>{t('boundaryTitle')}</strong><ul><li>{t('boundarySubmission')}</li><li>{t('boundaryCaptcha')}</li><li>{t('boundaryOutcome')}</li></ul></div><footer><button type="button" className="job-button job-button--secondary" onClick={() => setStep(4)}><ChevronLeft size={15} />{t('back')}</button><button type="button" className="job-button job-button--primary" disabled={!delegationConfirmed} onClick={() => void onStart()}><Play size={15} />{t('startManaged')}</button></footer></section> : null}
+    {step === 5 ? <section className="job-setup__panel">
+      <div className="job-setup__panel-heading"><div><h3>{t('delegationTitle')}</h3><p>{t('delegationHelp')}</p></div></div>
+      <div className="job-setup__delegation">
+        <fieldset className="job-setup__autonomy">
+          <legend>{t('autonomy')}</legend>
+          <div>{(['copilot', 'approval', 'autopilot'] as const).map((autonomy) => <label key={autonomy}>
+            <input type="radio" name="job-agent-autonomy" value={autonomy} checked={values.autonomy === autonomy} onChange={() => selectAutonomy(autonomy)} />
+            <span>{t(`autonomyMode.${autonomy}`)}</span>
+          </label>)}</div>
+        </fieldset>
+        <label>{t('minimumMatchScore')}<input type="number" min="0" max="100" value={values.minimumMatchScore} onChange={(event) => onChange('minimumMatchScore', Math.min(100, Math.max(0, Number(event.target.value))))} /></label>
+        <label>{t('dailyContactLimit')}<input type="number" min="1" max="100" value={values.dailyContactLimit} onChange={(event) => onChange('dailyContactLimit', Math.min(100, Math.max(1, Number(event.target.value))))} /></label>
+        <label className="job-setup__check job-setup__auto-resume"><input type="checkbox" checked={values.autoSendResume} disabled={values.autonomy !== 'autopilot'} onChange={(event) => onChange('autoSendResume', event.target.checked)} /><span>{t('autoSendResume')}</span></label>
+        <label className="job-setup__check job-setup__delegation-consent"><input type="checkbox" checked={delegationConfirmed} onChange={(event) => setDelegationConfirmed(event.target.checked)} /><span>{t('delegationConsent')}</span></label>
+      </div>
+      <div className="job-setup__boundary"><strong>{t('boundaryTitle')}</strong><ul><li>{t('boundarySubmission')}</li><li>{t('boundaryCaptcha')}</li><li>{t('boundaryOutcome')}</li></ul></div>
+      <footer>
+        <button type="button" className="job-button job-button--secondary" onClick={() => { setDelegationConfirmed(false); setStep(4) }}><ChevronLeft size={15} />{t('back')}</button>
+        <button type="button" className="job-button job-button--primary" disabled={!delegationConfirmed} onClick={() => void onStart()}><Play size={15} />{t('start')}</button>
+      </footer>
+    </section> : null}
   </div>
 }
 

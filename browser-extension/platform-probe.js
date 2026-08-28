@@ -77,9 +77,9 @@ function diagnoseBossAdapter() {
   }
   const conversation = counts.editors === 1
     && counts.sendControls === 1
-    && counts.recipientIdentities === 1
-    && counts.conversationIdentities === 1
-    && counts.recipientNames === 1
+    && explicitRecipientIdentities === 1
+    && explicitConversationIdentities === 1
+    && explicitRecipientNames === 1
   const context = conversation ? conversationContext() : null
   return {
     pageKind,
@@ -167,24 +167,19 @@ function conversationContext() {
   const conversationId = conversationNode?.getAttribute('data-conversation-id')
     || conversationNode?.getAttribute('data-lid')
     || conversationNode?.getAttribute('data-chat-id')
-  const visibleIdentity = visibleConversationIdentity()
-  const recipientName = nameNode?.textContent?.trim() || visibleIdentity?.recipientName
-  const resolvedPlatformRecipientId = platformRecipientId || visibleIdentity?.platformRecipientId
-  const resolvedConversationId = conversationId || visibleIdentity?.conversationId
-  if (!resolvedPlatformRecipientId || !resolvedConversationId || !recipientName) return null
+  const recipientName = nameNode?.textContent?.trim()
+  if (!platformRecipientId || !conversationId || !recipientName) return null
   const titleNode = uniqueVisible('[class*="boss-title"], [class*="recipient-title"], [class*="chat-position"]')
   return {
     editor,
     sendButton,
     recipient: {
-      platformRecipientId: resolvedPlatformRecipientId.slice(0, 500),
-      conversationId: resolvedConversationId.slice(0, 500),
+      platformRecipientId: platformRecipientId.slice(0, 500),
+      conversationId: conversationId.slice(0, 500),
       recipientName: recipientName.slice(0, 300),
       ...(titleNode?.textContent?.trim()
         ? { recipientTitle: titleNode.textContent.trim().slice(0, 300) }
-        : visibleIdentity?.recipientTitle
-          ? { recipientTitle: visibleIdentity.recipientTitle.slice(0, 300) }
-          : {})
+        : {})
     }
   }
 }
@@ -231,9 +226,10 @@ async function sendBossMessage(payload) {
   writeEditor(context.editor, payload.body.trim())
   const observedEditorBody = editorValue(context.editor).trim()
   if (observedEditorBody !== payload.body.trim()) throw new Error('BOSS editor body verification failed')
+  const previousReceiptIds = messageReceiptIds()
   context.sendButton.click()
 
-  const receipt = await waitForReceipt(payload.body.trim(), observedRecipient, 6_000)
+  const receipt = await waitForReceipt(payload.body.trim(), observedRecipient, previousReceiptIds, 6_000)
   if (!receipt) throw new Error('BOSS platform receipt was not observed')
   return receipt
 }
@@ -260,8 +256,9 @@ async function sendBossResumeAttachment(payload) {
   if (fileInput.files?.length !== 1 || fileInput.files[0]?.name !== payload.fileName) {
     throw new Error('BOSS resume input did not retain the approved file')
   }
+  const previousReceiptIds = attachmentReceiptIds()
   fileInput.dispatchEvent(new Event('change', { bubbles: true }))
-  return waitForResumeReceipt(payload, context.recipient, 8_000)
+  return waitForResumeReceipt(payload, context.recipient, previousReceiptIds, 8_000)
 }
 
 function uniqueResumeFileInput(mimeType) {
@@ -274,14 +271,13 @@ function uniqueResumeFileInput(mimeType) {
   return inputs.length === 1 ? inputs[0] : null
 }
 
-async function waitForResumeReceipt(payload, recipient, timeoutMs) {
+async function waitForResumeReceipt(payload, recipient, previousReceiptIds, timeoutMs) {
   const startedAt = Date.now()
   while (Date.now() - startedAt < timeoutMs) {
-    const nodes = [...document.querySelectorAll('[data-attachment-id], [data-file-id], [class*="file-message"], [class*="attachment"]')]
-      .filter((element) => element.textContent?.includes(payload.fileName))
-    if (nodes.length === 1) {
-      const node = nodes[0]
-      const platformAttachmentId = node.getAttribute('data-attachment-id') || node.getAttribute('data-file-id')
+    const receipts = attachmentReceiptCandidates(payload.fileName)
+      .filter(({ id }) => !previousReceiptIds.has(id))
+    if (receipts.length === 1) {
+      const platformAttachmentId = receipts[0].id
       if (platformAttachmentId) {
         return {
           platformAttachmentId: platformAttachmentId.slice(0, 500),
@@ -298,6 +294,18 @@ async function waitForResumeReceipt(payload, recipient, timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 150))
   }
   throw new Error('BOSS resume platform receipt was not observed')
+}
+
+function attachmentReceiptIds() {
+  return new Set(attachmentReceiptCandidates().map(({ id }) => id))
+}
+
+function attachmentReceiptCandidates(fileName) {
+  return [...document.querySelectorAll('[data-attachment-id], [data-file-id], [class*="file-message"], [class*="attachment"]')].flatMap((element) => {
+    if (fileName && !element.textContent?.includes(fileName)) return []
+    const id = element.getAttribute('data-attachment-id') || element.getAttribute('data-file-id')
+    return id ? [{ id: id.slice(0, 500) }] : []
+  })
 }
 
 function validSendPayload(payload) {
@@ -346,14 +354,13 @@ function editorValue(editor) {
     : editor.innerText || editor.textContent || ''
 }
 
-async function waitForReceipt(body, recipient, timeoutMs) {
+async function waitForReceipt(body, recipient, previousReceiptIds, timeoutMs) {
   const startedAt = Date.now()
   while (Date.now() - startedAt < timeoutMs) {
-    const contentNodes = [...document.querySelectorAll('[class*="message-content"], [class*="chat-text"], [class*="message-text"]')]
-      .filter((element) => element.textContent?.trim() === body)
-    if (contentNodes.length === 1) {
-      const messageNode = contentNodes[0].closest('[data-message-id], [data-msg-id], [class*="message-item"], [class*="chat-record"]')
-      const platformMessageId = messageNode?.getAttribute('data-message-id') || messageNode?.getAttribute('data-msg-id')
+    const receipts = messageReceiptCandidates(body)
+      .filter(({ id }) => !previousReceiptIds.has(id))
+    if (receipts.length === 1) {
+      const { id: platformMessageId, node: messageNode } = receipts[0]
       const statusText = messageNode?.textContent ?? ''
       const observedStatus = /已读/u.test(statusText) ? 'read' : /送达/u.test(statusText) ? 'delivered' : /发送|已发/u.test(statusText) ? 'sent' : null
       if (platformMessageId && observedStatus) {
@@ -370,6 +377,19 @@ async function waitForReceipt(body, recipient, timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 150))
   }
   return null
+}
+
+function messageReceiptIds() {
+  return new Set(messageReceiptCandidates().map(({ id }) => id))
+}
+
+function messageReceiptCandidates(body) {
+  return [...document.querySelectorAll('[class*="message-content"], [class*="chat-text"], [class*="message-text"]')].flatMap((element) => {
+    if (body && element.textContent?.trim() !== body) return []
+    const node = element.closest('[data-message-id], [data-msg-id], [class*="message-item"], [class*="chat-record"]')
+    const id = node?.getAttribute('data-message-id') || node?.getAttribute('data-msg-id')
+    return id && node ? [{ id: id.slice(0, 500), node }] : []
+  })
 }
 
 function fingerprint(value) {

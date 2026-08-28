@@ -67,7 +67,7 @@ describe('BOSS page send adapter', () => {
     }))
   })
 
-  it('derives a stable visible identity when the current BOSS chat omits legacy data ids', async () => {
+  it('refuses to verify a conversation when BOSS exposes only display text', async () => {
     document.body.innerHTML = `
       <section class="chat-conversation">
         <header><span>招聘经理</span><span>HR</span></header>
@@ -89,9 +89,11 @@ describe('BOSS page send adapter', () => {
     const recipient = await new Promise<Record<string, string> | null>((resolve) => {
       listener?.({ action: 'inspect-boss-conversation' }, {}, (value) => resolve((value as { recipient: Record<string, string> | null }).recipient))
     })
-    expect(recipient).toMatchObject({ recipientName: '招聘经理', recipientTitle: 'HR' })
-    expect(recipient?.platformRecipientId).toMatch(/^visible:fnv1a64:/u)
-    expect(recipient?.conversationId).toMatch(/^visible:fnv1a64:/u)
+    expect(recipient).toBeNull()
+    const diagnostic = await new Promise<Record<string, unknown>>((resolve) => {
+      listener?.({ action: 'diagnose-boss-adapter' }, {}, (value) => resolve((value as { diagnostic: Record<string, unknown> }).diagnostic))
+    })
+    expect(diagnostic).toMatchObject({ ready: { conversation: false, messageSend: false, resumeUpload: false } })
   })
 
   it('summarizes visible BOSS history without returning private message bodies', async () => {
@@ -145,6 +147,11 @@ describe('BOSS page send adapter', () => {
       clearTimeout
     })
     const body = '您好，我对平台工程师岗位很感兴趣。'
+    const previous = document.createElement('div')
+    previous.dataset.messageId = 'platform-message-old'
+    previous.innerHTML = `<span class="message-content"></span><span>已送达</span>`
+    previous.querySelector('.message-content')!.textContent = body
+    document.body.append(previous)
     document.querySelector('button')?.addEventListener('click', () => {
       const message = document.createElement('div')
       message.dataset.messageId = 'platform-message-1'
@@ -237,6 +244,10 @@ describe('BOSS page send adapter', () => {
     document.body.append(input)
     Object.defineProperty(input, 'files', { configurable: true, writable: true, value: null })
     const bytesBase64 = btoa('synthetic-pdf')
+    const previous = document.createElement('div')
+    previous.dataset.attachmentId = 'attachment-old'
+    previous.textContent = '岗位专属简历.pdf'
+    document.body.append(previous)
     input.addEventListener('change', () => {
       const receipt = document.createElement('div')
       receipt.dataset.attachmentId = 'attachment-1'

@@ -894,7 +894,7 @@ async function fulfillJson(route: Route, body: unknown) {
 async function seedDomainDatabase(page: Page, seed: DomainSeed) {
   await page.evaluate(async (records) => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('resume-os-domain', 1)
+      const request = indexedDB.open('resume-os-domain')
       request.onupgradeneeded = () => {
         const database = request.result
         database.createObjectStore('evidenceSources', { keyPath: 'id' })

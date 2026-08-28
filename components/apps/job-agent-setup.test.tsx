@@ -12,7 +12,7 @@ const values: JobSetupValues = {
   industries: 'Internet', experienceLevels: '3-5 years', educationLevels: 'Bachelor', companySizes: '', financingStages: '',
   minimumSalary: '25000', maximumSalary: '45000', maximumAgeDays: 14,
   workplaceTypes: ['hybrid'], employmentTypes: ['full-time'],
-  minimumMatchScore: 75, dailyContactLimit: 12, autonomy: 'approval', autoSendResume: true
+  minimumMatchScore: 75, dailyContactLimit: 12, autonomy: 'approval', autoSendResume: false
 }
 
 afterEach(cleanup)
@@ -42,12 +42,30 @@ describe('JobAgentSetup', () => {
     expect(screen.getByRole('textbox', { name: 'Target titles' })).toHaveValue('Platform Engineer')
     await user.click(screen.getByRole('button', { name: 'Save job criteria' }))
     expect(await screen.findByText('Confirm delegation rules')).toBeVisible()
-    await user.click(screen.getByRole('checkbox', { name: /I authorize the Agent/ }))
-    expect(onChange).toHaveBeenCalledWith('autonomy', 'autopilot')
-    expect(onChange).toHaveBeenCalledWith('autoSendResume', true)
-    await user.click(screen.getByRole('button', { name: 'Authorize and start managed mode' }))
+    expect(screen.getByRole('radio', { name: 'Approve key actions' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /Automatically send/ })).toBeDisabled()
+    await user.click(screen.getByRole('checkbox', { name: /I reviewed these choices/ }))
+    expect(onChange).not.toHaveBeenCalledWith('autonomy', 'autopilot')
+    expect(onChange).not.toHaveBeenCalledWith('autoSendResume', true)
+    await user.click(screen.getByRole('button', { name: 'Confirm and start Agent' }))
     expect(onSave).toHaveBeenCalledTimes(1)
     expect(onStart).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps automatic resume sending separate from the automation level', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    renderSetup({
+      trustedResume: true,
+      values: { ...values, autonomy: 'autopilot', autoSendResume: false },
+      onChange
+    })
+    await user.click(screen.getByRole('button', { name: 'Let Agent analyze goal' }))
+    await user.click(screen.getByRole('button', { name: 'Continue to analysis' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm and choose job criteria' }))
+    await user.click(screen.getByRole('button', { name: 'Save job criteria' }))
+    await user.click(screen.getByRole('checkbox', { name: /Automatically send/ }))
+    expect(onChange).toHaveBeenCalledWith('autoSendResume', true)
   })
 })
 

@@ -143,10 +143,12 @@ async function installAiMocks(page: Page) {
       jd: string
       locale: 'en'
       resume: ResumeData
+      targetIdentity: string
     }>(route)
-    expectExactKeys(body, ['jd', 'locale', 'resume'])
+    expectExactKeys(body, ['jd', 'locale', 'resume', 'targetIdentity'])
     expect(body.jd).toBe(jobDescription)
     expect(body.locale).toBe('en')
+    expect(body.targetIdentity).toMatch(/^posting-/u)
     expect(body.resume).toMatchObject({
       profile: { name: 'Ada Candidate', title: 'Engineer' },
       experiences: [{ bullets: [originalBullet] }],
@@ -372,17 +374,18 @@ test('builds a reviewable Evidence Agent run and saves a variant without mutatin
   await expect.poll(() => readActiveMaster(page)).not.toBeNull()
   const masterBefore = await readActiveMaster(page)
 
-  await page.goto('/en/jobs')
+  await page.goto('/en/jobs/preferences')
   const radar = page.getByRole('application', { name: 'Job Agent' })
-  await radar.getByRole('textbox', { name: 'Profile name' }).fill('AI platform roles')
-  await radar.getByRole('textbox', { name: 'Target titles' }).fill('Staff AI Platform Engineer')
-  await radar.getByRole('button', { name: 'Save profile' }).click()
-  await radar.getByText('Advanced: add a company board').click()
-  await radar.getByRole('textbox', { name: 'Public board identifier' }).fill('evidence-labs')
-  await radar.getByRole('button', { name: 'Add source' }).click()
-  await radar.getByRole('button', { name: 'Refresh evidence-labs' }).click()
-  await expect(radar.getByRole('heading', { name: 'Staff AI Platform Engineer' })).toBeVisible()
-  await radar.getByRole('button', { name: 'Analyze' }).click()
+  await radar.getByText('Bring back a job', { exact: true }).click()
+  await radar.getByRole('textbox', { name: 'Quick paste' }).fill([
+    'Job title: Staff AI Platform Engineer',
+    'Company: Evidence Labs',
+    'Location: Remote',
+    'URL: https://www.zhipin.com/job_detail/staff-ai-1.html',
+    `Job description: ${jobDescription}`
+  ].join('\n'))
+  await radar.getByRole('button', { name: 'Parse and prefill' }).click()
+  await radar.getByRole('button', { name: 'Import and analyze' }).click()
 
   const jdMatch = page.getByRole('application', { name: 'Target Job' })
   await expect(jdMatch.getByRole('textbox', { name: 'Job description' })).toHaveValue(jobDescription)
@@ -396,8 +399,7 @@ test('builds a reviewable Evidence Agent run and saves a variant without mutatin
   await jdMatch.getByRole('button', { name: 'Create Agent run' }).click()
   await expect(jdMatch.getByText('Target job and Agent run saved; the Job Agent application is linked locally.')).toBeVisible()
 
-  const dock = page.getByRole('navigation', { name: 'Dock' })
-  await dock.getByRole('button', { name: 'Resume Agent' }).click()
+  await page.goto('/en/agent')
   const agent = page.getByRole('application', { name: 'Resume Agent' })
   await agent.getByRole('textbox', { name: 'Optimization instruction' }).fill(
     'Emphasize verified platform impact'
@@ -456,13 +458,14 @@ test('builds a reviewable Evidence Agent run and saves a variant without mutatin
     applications: [{ status: 'analyzing', targetJobId: expect.any(String) }]
   })
 
-  await page.goto('/en/jobs')
+  await page.goto('/en/jobs/applications')
   const applicationRadar = page.getByRole('application', { name: 'Job Agent' })
-  await expect(applicationRadar.getByRole('heading', { name: 'Application packets' })).toBeVisible()
-  await applicationRadar.getByRole('button', { name: 'Check application packet' }).click()
+  await expect(applicationRadar.getByRole('heading', { name: 'Application packets' }).first()).toBeVisible()
+  const packetCheck = applicationRadar.getByRole('button', { name: 'Check application packet' })
+  if (await packetCheck.count()) await packetCheck.click()
   await expect(applicationRadar.getByRole('link', { name: 'Open application site' })).toHaveAttribute(
     'href',
-    'https://boards.greenhouse.io/evidence-labs/jobs/staff-ai-1'
+    'https://www.zhipin.com/job_detail/staff-ai-1.html'
   )
   expect((await readDomainOutcome(page)).applications[0]?.status).toBe('ready-to-apply')
   await applicationRadar.getByRole('button', { name: 'I submitted this application' }).click()

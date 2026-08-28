@@ -16,7 +16,8 @@ cycle queue. A Chrome alarm queues work every 15 minutes before attempting to wa
 JobSeeker Agent tab. Closing the page leaves the oldest cycle pending; reopening the page
 dispatches it and waits for a completed/failed/skipped receipt before another cycle can
 run. Chrome restart restores the alarm and coalesces missed intervals into one catch-up
-cycle. Job results, career data, resume content, credentials, and inbox content are not
+cycle. Only a localized `/jobs` workspace tab may receive a cycle; Studio and other
+legacy tool tabs never report scheduler readiness. Job results, career data, resume content, credentials, and inbox content are not
 persisted in extension storage.
 
 On the same schedule, an already-open BOSS chat may be checked for an explicit,
@@ -28,10 +29,10 @@ shapes fail closed.
 
 For a verified resume request, JobSeeker Agent may provide a bounded, locally generated
 PDF to the extension when the active conversation exposes exactly one PDF-capable input.
-The probe verifies the recipient,
+The probe verifies stable platform recipient and conversation IDs,
 conversation, filename, MIME type, byte length, content fingerprint, and a unique compatible file input before firing
-the native change event. It reports success only when one platform attachment node
-contains the exact filename and a platform attachment ID. File bytes are never stored
+the native change event. It snapshots existing attachment IDs and reports success only when one new platform attachment node
+contains the exact filename and a previously unseen platform attachment ID. File bytes are never stored
 in extension storage.
 
 The `diagnose-boss-adapter` action exposes only bounded selector counts and readiness
@@ -41,15 +42,15 @@ conversation identity/editor/send controls, and resume readiness additionally re
 one PDF-capable file input.
 
 Conversation inspection runs in all matching frames, including BOSS `about:blank`
-child frames. It returns a recipient only when one frame contains exactly one visible
-recipient identity, conversation identity, editor, and send control. Ambiguous or
+child frames. It returns a recipient only when one frame contains exactly one stable
+platform recipient identity, stable conversation identity, recipient name, editor, and send control. Display-text-derived identities remain diagnostic-only. Ambiguous or
 missing controls fail closed; inspection does not type or send a message.
 
 After the exact message is approved, the send adapter repeats the same recipient and
 conversation checks, recomputes the FNV-1a body fingerprint, writes through the native
 editor setter, verifies the rendered editor value, and clicks the unique send control.
-It returns success only after one message-content node exactly matches the body and its
-platform message node exposes an ID plus sent, delivered, or read status. Otherwise it
+It snapshots existing message IDs before the click and returns success only after one newly observed message-content node exactly matches the body and its
+platform message node exposes a previously unseen ID plus sent, delivered, or read status. Otherwise it
 returns no receipt and JobSeeker Agent records a failed—not sent—attempt.
 
 Message sending remains fail-closed and must not be treated as production-ready until

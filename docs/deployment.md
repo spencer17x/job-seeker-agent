@@ -36,8 +36,13 @@ This is structured evidence retrieval for a resume-tailoring domain. It is inten
 | Resume variants and optimization runs | IndexedDB | Enables job-specific versions and resumable state transitions |
 | Job sources, search profiles, public postings, recommendations, application records | IndexedDB | Public job content plus local decisions and packet references; no platform sessions or credentials |
 | Active workflow pointer and UI preferences | `localStorage` | Theme, motion, desktop layout, locale/provider preference |
+| Strategy memory | `localStorage` | At most 20 explicitly applied, de-identified history simulations; independently inspectable, disableable, exportable, and clearable |
 | Provider Base URL/model | `localStorage` | Per browser origin |
 | BYOK API key | `sessionStorage` by default | Moves to `localStorage` only after explicit device-persistence consent |
+
+Trusted resume readiness spans both storage layers: the structured draft must exist in
+`localStorage` and its `EvidenceSource` must exist in IndexedDB. A missing evidence
+record fails closed, blocks Job Agent execution, and can be retried from Resume Studio.
 
 If IndexedDB is unavailable, JobSeeker Agent reports that Career Evidence or agent state was not saved; it must not display an in-memory result as durable. Deletion checks are restrictive: a draft, fact, requirement, job, or variant referenced by saved agent data is not silently cascaded away.
 
@@ -115,10 +120,11 @@ Users should still review the privacy and retention terms of their chosen hostin
 
 ## Quality, release, and deployment
 
-The repository does not run an automatic quality workflow for pull requests or
-pushes and does not ship Git hooks. `main` is intentionally unprotected for a
-single-maintainer workflow. Run `pnpm check` (typecheck, unit/integration tests,
-and a production build) directly before pushing. Release preparation,
+The read-only `.github/workflows/quality.yml` workflow runs `pnpm check` and the
+complete Playwright suite for pull requests and pushes to `main`. The repository
+does not ship Git hooks, and `main` remains intentionally unprotected for a
+single-maintainer workflow. Run checks proportional to the change directly
+before pushing instead of relying only on remote CI. Release preparation,
 publication, and production deployment remain explicit operations:
 
 ```text
@@ -138,7 +144,8 @@ manual Release workflow from main with vX.Y.Z + full release commit SHA
 ```
 
 There is no whole-tree ESLint or Prettier gate. Run the relevant direct checks
-for each change and use `pnpm check` as the complete local handoff verification.
+for each change and use `pnpm check` as the complete local handoff verification;
+the Quality workflow adds the full browser suite remotely.
 `.github/workflows/release.yml` never creates a release
 automatically. A manual dispatch must run from the `main` ref and names both the
 intended `vX.Y.Z` tag and the full release commit SHA. The workflow validates that

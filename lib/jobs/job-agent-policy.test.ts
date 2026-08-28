@@ -40,6 +40,21 @@ describe('job agent policy', () => {
     })).platforms).toEqual(['boss'])
   })
 
+  it('migrates missing action limits and resume consent to fail-closed defaults', () => {
+    expect(parseJobAgentPreferences(JSON.stringify({
+      version: 1,
+      enabled: true,
+      autonomy: 'autopilot',
+      platforms: ['boss'],
+      learnFromReplies: true,
+      learnFromOutcomes: true
+    }))).toMatchObject({
+      minimumMatchScore: 70,
+      dailyContactLimit: 20,
+      autoSendResume: false
+    })
+  })
+
   it('never sends or submits without both autopilot mode and an authorized connector', () => {
     const preferences = { ...DEFAULT_JOB_AGENT_PREFERENCES, enabled: true, autonomy: 'autopilot' as const }
     expect(canExecuteJobAgentAction({ action: 'discover', preferences })).toBe(true)

@@ -8,6 +8,8 @@ import {
   createDomainStore,
   type ApplicationRecord,
   type CareerFact,
+  type DomainStoreName,
+  type DomainStoreTransaction,
   type EvidenceSource,
   type JobPosting,
   type JobRecommendation,
@@ -336,6 +338,54 @@ describe('IndexedDbDomainStore', () => {
     for (const storeName of DOMAIN_STORE_NAMES) {
       expect(await store.list(storeName)).toEqual([])
     }
+    await store.close()
+  })
+
+  it('queries source-draft and conversation relations through IndexedDB indexes', async () => {
+    const { store } = createTestStore()
+    await seedRelations(store, { includeVariant: true })
+    await store.put('jobSources', jobSource)
+    await store.put('jobSearchProfiles', searchProfile)
+    await store.put('jobPostings', jobPosting)
+    await store.put('jobRecommendations', jobRecommendation)
+    await store.put('jobRecommendations', {
+      ...jobRecommendation,
+      id: 'job-recommendation-2',
+      sourceDraftId: 'draft-2'
+    })
+    await store.put('applicationRecords', applicationRecord)
+    await store.put('applicationRecords', {
+      id: 'application-record-2',
+      postingId: jobPosting.id,
+      sourceDraftId: 'draft-2',
+      status: 'saved',
+      notes: '',
+      createdAt: now,
+      updatedAt: now
+    })
+    const thread = createBossConversationThread({ applicationId: applicationRecord.id, now })
+    const message = createBossMessageDraft({
+      threadId: thread.id, kind: 'opener', body: 'Hello', evidenceFactIds: [fact.id], now
+    })
+    await store.put('bossConversationThreads', thread)
+    await store.put('bossConversationMessages', message)
+
+    await expect(store.listByIndex('jobRecommendations', 'bySourceDraftId', 'draft-1'))
+      .resolves.toEqual([jobRecommendation])
+    await expect(store.listByIndex('applicationRecords', 'bySourceDraftId', 'draft-1'))
+      .resolves.toEqual([applicationRecord])
+    await expect(store.listByIndex('bossConversationThreads', 'byApplicationId', applicationRecord.id))
+      .resolves.toEqual([thread])
+    await expect(store.listByIndex('bossConversationMessages', 'byThreadId', thread.id))
+      .resolves.toEqual([message])
+    await store.close()
+  })
+
+  it('keeps unrelated stores outside a focused write transaction', async () => {
+    const { store } = createTestStore()
+    await expectErrorCode(store.transaction(['jobSources'], 'readwrite', (transaction) => (
+      (transaction as DomainStoreTransaction<DomainStoreName>).list('interviewReviews')
+    )), 'TRANSACTION_FAILED')
     await store.close()
   })
 

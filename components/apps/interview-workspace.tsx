@@ -148,7 +148,7 @@ export function InterviewWorkspace({
         <label>{t('format')}<select value={format} onChange={(event) => setFormat(event.target.value as InterviewSession['format'])}>{(['phone', 'video', 'onsite', 'take-home', 'other'] as const).map((value) => <option key={value} value={value}>{t(`formats.${value}`)}</option>)}</select></label>
         <label>{t('scheduledAt')}<input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label>
         <button className="job-button job-button--primary" type="button" onClick={() => void addSession()} disabled={busy}><Plus size={15} />{t('add')}</button>
-      </div> : <p className="job-workspace__empty">{t('requiresApplied')}</p>}
+      </div> : <div className="job-workspace__empty-state"><p>{t('requiresApplied')}</p><a className="job-button job-button--primary" href={`/${locale}/jobs/applications`}>{t('viewApplications')}</a></div>}
     </section>
     {error ? <p className="job-workspace__alert" data-tone="error" role="alert">{error}</p> : null}
     <div className="job-interviews__body">

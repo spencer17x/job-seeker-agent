@@ -51,6 +51,11 @@ There is currently no embedding pipeline, vector database, document chunk index,
 - `localStorage` for drafts and preferences
 - IndexedDB for evidence, jobs, recommendations, application records, requirements, mappings, variants, and resumable agent runs
 
+Active Job workspace relations are loaded through typed IndexedDB indexes keyed by
+source draft, application, and conversation. Write transactions lock only the requested
+stores and the stores required to validate their references; they do not take a fixed
+whole-database write scope.
+
 ## Routes
 
 ```text
@@ -92,10 +97,11 @@ corepack pnpm@11.17.0 check
 
 `pnpm check` is the authoritative local verification command: it runs
 typecheck, the unit/integration suite, and a production build (not Playwright
-e2e). The repository does not ship Git hooks or an automatic pull-request/push
-quality workflow, so run the relevant checks directly before committing or
-pushing. There is no required whole-tree Prettier/ESLint gate; keep formatting
-consistent with nearby files.
+e2e). The read-only [Quality workflow](.github/workflows/quality.yml) runs
+`pnpm check` plus the complete Playwright suite for pull requests and pushes to
+`main`. The repository does not ship Git hooks, so still run the checks relevant
+to a change before committing or pushing. There is no required whole-tree
+Prettier/ESLint gate; keep formatting consistent with nearby files.
 
 The supported local runtime is Node.js 24.18.0 (`>=24.18.0 <25`).
 
@@ -126,17 +132,23 @@ Existing installations are migrated in place: legacy `resume-os*` localStorage v
 | Structured resume drafts and snapshots | `localStorage` | Only when required by an explicitly selected cloud AI task |
 | Career evidence, postings, recommendations, application records, target jobs, requirements, mappings, variants, agent runs, BOSS conversations, interview rounds, Q&A, and reviews | IndexedDB | Job discovery stays in the local browser bridge; career context leaves the device only for an explicitly selected cloud AI task |
 | Provider choice, theme, motion, desktop layout | `localStorage` | No |
+| Versioned strategy memory from explicitly applied history simulations | `localStorage` | No; exports are initiated locally by the user |
 | OpenAI-compatible Base URL and model | `localStorage` | Included with same-origin AI requests |
 | BYOK API key | `sessionStorage` by default; `localStorage` only after explicit “remember” consent | Relayed through the same-origin route to the configured provider; never persisted by JobSeeker Agent server code |
 
 Uploaded PDF/DOCX/TXT bytes are processed transiently by the same-origin extraction route and are not written to the domain store. The original document bytes are not stored in IndexedDB. Clearing site data, using a different browser profile, or moving to a different deployment origin produces a separate local workspace unless the user exports or migrates it separately.
+
+A pasted or uploaded draft becomes Agent-ready only after its local Career Evidence
+source is committed to IndexedDB. If that write fails or browser storage is blocked,
+discovery and setup remain disabled and Resume Studio offers an explicit retry; the
+draft is never treated as evidence-ready merely because it exists in `localStorage`.
 
 ## Job Agent platform and action boundary
 
 Job Agent starts from the resume rather than a required target company. Its first release supports only BOSS Zhipin. Platform availability never implies that the browser send adapter is enabled:
 
 - BOSS Zhipin opens a fixed-host official search carrying the primary target title.
-- BOSS Zhipin session detection and the approval-bound send protocol are implemented. The adapter refuses to send unless recipient, editor, exact body, send control, platform message ID, and receipt status all verify.
+- BOSS Zhipin session detection and the approval-bound send protocol are implemented. The adapter refuses to send unless BOSS exposes stable recipient and conversation IDs plus a unique editor, exact body, send control, and a newly observed platform receipt.
 - When the local Browser Agent is present on a BOSS search-results tab, it imports at most 50 bounded visible job cards, validates their hosts, scores them locally, and automatically queues eligible roles scoring at least 70. Queuing means “prepare for analysis,” never “submitted.”
 - When no BOSS search tab is open, the extension constructs a fixed-host search from the primary configured title, opens it in an inactive temporary tab, collects the bounded results, and closes the tab. JobSeeker Agent never passes an arbitrary URL to the extension.
 - While enabled, the extension persists a bounded, content-free cycle queue and runtime heartbeat in `chrome.storage.local`. Every 15 minutes it queues work before attempting delivery to a JobSeeker Agent tab. Closing the page leaves the cycle pending; reopening the page dispatches the oldest cycle and waits for a completion receipt before rate-limited delivery of the next. Chrome restart coalesces missed intervals into one catch-up cycle rather than replaying a burst. Results and career data remain in the JobSeeker Agent origin; queued records contain only cycle IDs, timestamps, attempts, and missed-interval counts, never cookies, resumes, jobs, or private inbox content.
@@ -148,8 +160,8 @@ Job Agent starts from the resume rather than a required target company. Its firs
 - Job Preferences includes a content-free adapter diagnostic. It reports only selector counts and readiness for discovery, conversation identity, message sending, and PDF upload across open BOSS frames. It never returns job descriptions, recipient names, or private message text, and zero/ambiguous matches remain not ready.
 - When a verified recruiter thread requests a resume, JobSeeker Agent renders the application-linked `ResumeVariant` into a local, text-selectable PDF without a server round trip. Upload is accepted only when the extension re-verifies the recipient and conversation, the file input uniquely accepts PDF, the exact byte fingerprint matches, and BOSS exposes a matching attachment ID and filename. Otherwise the thread remains `resume-requested`.
 - Applied optimization runs are detected automatically. When every packet check passes, the application advances to `ready-to-apply` and its single BOSS conversation thread/opening draft is created idempotently; users do not need to click a separate “prepare materials” step.
-- Recipient approval probes all BOSS child frames and succeeds only when a single frame exposes one recipient identity, conversation identity, editor, and send control. This probe is read-only; typing is available only to an exact approved message after the same checks pass again.
-- In Autopilot mode, a successful recipient approval hands the exact approved body to the extension. The extension revalidates identity and body, writes the editor, verifies its rendered value, clicks the unique send control, and returns only a message node carrying an exact body match, platform message ID, and sent/delivered/read status. Missing or mismatched receipts are persisted as failed attempts, never successful sends.
+- Recipient approval probes all BOSS child frames and succeeds only when a single frame exposes one stable platform recipient ID, stable conversation ID, recipient name, editor, and send control. Display-name-derived identities are diagnostic-only and cannot authorize a send. This probe is read-only; typing is available only to an exact approved message after the same checks pass again.
+- In Autopilot mode, a successful recipient approval hands the exact approved body to the extension. The extension revalidates identity and body, snapshots existing platform receipt IDs, writes the editor, verifies its rendered value, clicks the unique send control, and accepts only a newly observed message node carrying an exact body match, platform message ID, and sent/delivered/read status. Resume uploads use the same pre-action receipt snapshot rule. Missing, historical, or mismatched receipts are persisted as failed attempts, never successful sends.
 - Other marketplace and public-board parsers remain internal for backward compatibility with existing local data, but are not shown in the first-release Job Agent catalog.
 
 For a role selected on BOSS Zhipin, the user may paste its official HTTPS
@@ -177,6 +189,11 @@ Public-source refresh is manual. BOSS cycles remain queued when the JobSeeker Ag
 JobSeeker Agent prepares a checked local packet and opens the original employer application URL in a new tab. Opening that page never changes the application status. Only the separate user action “I submitted this application” records `applied` and `submittedAt`. Authenticated marketplace scraping, cookie reuse, CAPTCHA bypass, screening-answer invention, browser form submission, and unattended or bulk applications are outside the product boundary.
 
 After confirmed submission, an interview invitation can move the application to `interviewing`. Each round stores its schedule, user notes, questions, and answers locally. AI review provides a summary, gaps, suggestions, and an explicitly advisory pass estimate based only on the supplied interview record. Durable `passed` and `failed` outcomes always require an explicit user report.
+
+Applied history simulations are stored separately as bounded, versioned strategy
+memory. Users can inspect the latest parameters, disable further learning, export the
+memory as JSON, or clear it without changing current preferences or deleting resumes,
+Career Evidence, jobs, conversations, applications, or interview records.
 
 ## AI providers and no-silent-fallback policy
 

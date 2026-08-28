@@ -15,7 +15,8 @@ rules, user intent, and a complete action history.
 1. The user selects Start setup and describes the work they want in natural language.
    They may instead begin from selectable job-intent tags, or combine both methods.
 2. The user uploads or pastes a trusted resume and waits for the structured resume
-   analysis to finish. The Agent converts the prompt and resume-grounded suggestions
+   analysis and local Career Evidence transaction to finish. A failed evidence write
+   remains a repairable blocker rather than an Agent-ready resume. The Agent converts the prompt and resume-grounded suggestions
    into a typed, reviewable intent proposal; neither source silently becomes a saved
    search constraint.
 3. The user confirms the proposal through grouped selectable tags and bounded custom
@@ -148,9 +149,11 @@ Acceptance criteria:
    ambiguous terms, conflicts, custom values, migration, keyboard access, and both hard
    and soft constraint behavior.
 
-Current implementation status as of 2026-08-22: prompt capture exists, but its parser
-uses a small fixed title/city/keyword catalog and regular expressions, so it does not
-provide complete semantic understanding, clarification, provenance, or conflict
+Current implementation status as of 2026-08-28: prompt capture exists, and its bounded
+parser distinguishes salary from experience ranges, recognizes basic outsourcing
+negation, and extracts a small set of role aliases. It still uses a fixed
+title/city/keyword catalog and regular expressions, so it does not provide complete
+semantic understanding, clarification, provenance, or conflict
 resolution. The setup UI provides selectable workplace and employment types plus a
 posting-age selector, while most other dimensions are comma-separated text fields; it
 does not yet provide the grouped role/domain/location/company taxonomy required above.
@@ -204,6 +207,12 @@ job-specific variants.
 
 Users can inspect, disable, export, or clear strategy memory independently from their
 resume and application records.
+
+Current implementation status as of 2026-08-28: explicitly applied history simulations
+are retained as a bounded 20-version local strategy memory. The overview exposes the
+latest applied parameters plus independent learning enable/disable, JSON export, and
+two-step clearing controls. Clearing memory does not mutate current preferences or any
+career/application domain record.
 
 ## Runtime and data model
 

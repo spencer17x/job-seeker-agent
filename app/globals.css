@@ -1232,6 +1232,8 @@ a {
 .resume-studio__evidence > header p { color: var(--theme-muted); font-size: 10px; line-height: 1.4; }
 .resume-studio__evidence-error { margin-top: 8px !important; padding: 7px 8px; border-left: 3px solid #d85f56; background: color-mix(in srgb, #d85f56 10%, var(--theme-panel)); color: #d85f56; font-size: 10px; line-height: 1.4; }
 .resume-studio__evidence-empty { margin-top: 9px !important; color: var(--theme-muted); font-size: 10px; line-height: 1.45; }
+.resume-studio__evidence-empty-action { display: grid; justify-items: start; gap: 8px; }
+.resume-studio__evidence-empty-action button { display: inline-flex; min-height: 30px; align-items: center; gap: 5px; border: 1px solid var(--theme-line); border-radius: 6px; background: var(--theme-panel); padding: 5px 8px; color: var(--theme-accent); font-size: 10px; font-weight: 700; }
 .resume-studio__evidence-source { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--theme-line); }
 .resume-studio__evidence-source strong { min-width: 0; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .resume-studio__evidence-source span { flex: 0 0 auto; color: var(--theme-muted); font-size: 9px; }
@@ -3492,6 +3494,20 @@ a {
 .job-history-learning > header svg { flex: 0 0 auto; color: var(--jw-primary); }
 .job-history-learning > header p { margin-top: 4px; color: var(--jw-muted); font-size: 12px; }
 .job-history-learning__privacy { border-left: 3px solid var(--jw-success); background: color-mix(in srgb, var(--jw-success) 7%, var(--jw-surface)); padding: 9px 12px; color: var(--jw-muted); font-size: 12px; }
+.job-history-learning__memory { display: grid; gap: 12px; border: 1px solid var(--jw-line); border-radius: 8px; padding: 14px; }
+.job-history-learning__memory > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.job-history-learning__memory > header > div { display: flex; align-items: center; gap: 8px; }
+.job-history-learning__memory > header span { border-radius: 999px; background: var(--jw-primary-soft); padding: 3px 7px; color: var(--jw-primary); font-size: 10px; font-weight: 700; }
+.job-history-learning__memory > header span[data-enabled='false'] { background: color-mix(in srgb, var(--jw-line) 45%, transparent); color: var(--jw-muted); }
+.job-history-learning__memory > header small,
+.job-history-learning__memory > p,
+.job-history-learning__memory > small { color: var(--jw-muted); font-size: 11px; }
+.job-history-learning__memory dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.job-history-learning__memory dl > div { display: grid; gap: 4px; border-radius: 7px; background: color-mix(in srgb, var(--jw-line) 28%, transparent); padding: 9px; }
+.job-history-learning__memory dt { color: var(--jw-muted); font-size: 10px; }
+.job-history-learning__memory dd { font-size: 12px; font-weight: 700; }
+.job-history-learning__memory footer { display: flex; flex-wrap: wrap; gap: 8px; }
+.job-history-learning__memory footer > div { display: flex; flex-wrap: wrap; gap: 8px; }
 .job-history-learning__simulation { display: grid; gap: 14px; border-top: 1px solid var(--jw-line); padding-top: 16px; }
 .job-history-learning__simulation > header { display: flex; align-items: center; justify-content: space-between; }
 .job-history-learning__simulation > header > div { display: flex; align-items: center; gap: 10px; }
@@ -3647,10 +3663,15 @@ a {
 .job-setup fieldset input,
 .job-setup__check input { width: 16px; min-height: 16px; }
 .job-setup__delegation { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; margin-top: 22px; }
-.job-setup__check { grid-column: 1 / -1; }
+.job-setup__autonomy,
+.job-setup__auto-resume,
+.job-setup__delegation-consent { grid-column: 1 / -1; }
+.job-setup__auto-resume:has(input:disabled) { color: var(--jw-muted); }
 .job-setup__boundary { margin-top: 20px; border-left: 3px solid var(--jw-warning); background: color-mix(in srgb, var(--jw-warning) 7%, var(--jw-surface)); padding: 14px 16px; }
 .job-setup__boundary ul { display: grid; gap: 6px; margin-top: 9px !important; padding-left: 18px !important; list-style: disc !important; color: var(--jw-muted); }
 .job-workspace__empty { padding: 40px 24px; color: var(--jw-muted); text-align: center; }
+.job-workspace__empty-state { display: grid; max-width: 620px; justify-items: center; gap: 14px; margin: 42px auto; border: 1px dashed var(--jw-line); border-radius: 10px; background: var(--jw-surface); padding: 32px 28px; color: var(--jw-muted); text-align: center; }
+.job-workspace__empty-state p { max-width: 56ch; line-height: 1.6; }
 .job-workspace .application-pipeline,
 .job-workspace .boss-conversation-queue { overflow: hidden; border: 1px solid var(--jw-line); border-radius: 9px; background: var(--jw-surface); }
 .job-resume-agent { min-height: 420px; overflow: hidden; margin-bottom: 18px; border: 1px solid var(--jw-line); border-radius: 9px; background: var(--jw-surface); }
@@ -3763,6 +3784,7 @@ a {
   .job-history-learning > header { flex-direction: column; }
   .job-history-learning__signals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .job-history-learning__simulation dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .job-history-learning__memory dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .job-interviews { padding: 20px 14px 32px; }
   .job-interviews__form { grid-template-columns: 1fr; }
   .job-interviews__body { grid-template-columns: 1fr; }

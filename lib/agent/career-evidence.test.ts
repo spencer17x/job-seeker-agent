@@ -1,6 +1,7 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  CAREER_EVIDENCE_CHANGED_EVENT,
   CareerEvidenceImportError,
   buildCareerEvidenceImport,
   careerEvidenceSourceId,
@@ -172,6 +173,20 @@ describe('career evidence import', () => {
     const afterDelete = await reviewService.listForDraft('draft-1')
     expect(afterDelete.facts).toHaveLength(imported.facts.length - 1)
     expect(afterDelete.facts).toContainEqual(confirmed)
+    await store.close()
+  })
+
+  it('announces a successful evidence import so open workspaces can re-check readiness', async () => {
+    const store = testStore()
+    const listener = vi.fn()
+    window.addEventListener(CAREER_EVIDENCE_CHANGED_EVENT, listener)
+
+    await createCareerEvidenceService({ store, now: () => now }).importResume({
+      draftId: 'draft-1', label: 'Ada', data: resume('paste')
+    })
+
+    expect(listener).toHaveBeenCalledOnce()
+    window.removeEventListener(CAREER_EVIDENCE_CHANGED_EVENT, listener)
     await store.close()
   })
 

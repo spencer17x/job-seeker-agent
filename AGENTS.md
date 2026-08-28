@@ -34,11 +34,18 @@ Preserve these product invariants:
 - `app/api/`: stateless same-origin route handlers for AI calls and document extraction.
 - `components/desktop/`: desktop/mobile shell, application registry integration, window management, Dock, and global UI providers.
 - `components/apps/`: product applications such as Studio, JD Match, Agent, Settings, and resume presentation views.
+- `components/apps/use-application-controller.ts`: application packet, explicit submission, and local note actions.
+- `components/apps/use-boss-conversation-controller.ts`: BOSS recipient verification, send/receipt, resume-request, reply, and follow-up orchestration.
+- `components/apps/use-job-search-profile-controller.ts`: search configuration, resume-derived defaults, goal parsing, and profile persistence.
+- `components/apps/use-job-discovery-controller.ts`: BOSS/public discovery, scoring, candidate queue, manual import, and Target Job handoff.
 - `components/resume-draft-provider.tsx`: active resume and draft context.
 - `lib/resume-model.ts`: canonical `ResumeData`, drafts, snapshots, IDs, and normalization.
 - `lib/resume-store.ts`: localStorage draft persistence and multi-tab merge behavior.
 - `lib/agent/`: evidence domain, IndexedDB store, provider routing, deterministic scoring, optimization state machine, plans, change sets, and variants.
 - `lib/jobs/`: authorized public-source adapters, local posting/recommendation/application contracts, refresh, scoring, promotion, and packet state transitions.
+- `lib/jobs/job-workspace.ts`: indexed active-draft workspace loading and automatic packet/conversation refresh.
+- `lib/jobs/job-scoring.ts`: shared deterministic rescoring for the current search profile and trusted draft.
+- `lib/jobs/job-strategy-memory.ts`: bounded, versioned, independently managed history-learning strategy memory.
 - `lib/server/`: request guards, bounded JSON parsing, document parser isolation, and DOCX preflight checks.
 - `i18n/` and `messages/`: locale routing and Chinese/English messages.
 - `tests/e2e/`: Playwright desktop, mobile, safety, and workflow coverage.
@@ -56,7 +63,7 @@ Preserve these product invariants:
 - Keep `ResumeData` as the normalized contract consumed by every presentation application. Do not make a view depend on raw uploaded files or model-specific output.
 - Keep desktop layout state independent from resume and Agent domain state. Closing or resetting a window must not delete career data.
 - Use the existing persistence boundaries:
-  - localStorage for drafts, snapshots, desktop state, provider preferences, theme, motion, and the active workflow pointer.
+  - localStorage for drafts, snapshots, desktop state, provider preferences, theme, motion, the active workflow pointer, and versioned strategy memory.
   - IndexedDB through `lib/agent/domain-store.ts` for evidence sources, career facts, public job data, recommendations, application records, target jobs, requirements, matches, variants, and optimization runs.
   - sessionStorage for a BYOK key by default; localStorage only after explicit remember consent.
 - Treat data from requests, storage, uploaded documents, and models as untrusted. Parse it through the relevant Zod schema and retain existing byte/count limits.
@@ -146,9 +153,10 @@ Verification policy:
 
 Do not commit, amend, tag, or push unless the user explicitly asks for that action.
 
-The repository does not install or ship Git hooks and does not run a quality
-workflow automatically on commits or pushes. Run the checks required by this
-guide directly before committing or pushing.
+The repository does not install or ship Git hooks. Its read-only Quality
+workflow runs `pnpm check` and the complete Playwright suite for pull requests
+and pushes to `main`, but run the checks required by this guide directly before
+committing or pushing instead of relying only on remote CI.
 
 When asked to commit or use Commit and Push:
 

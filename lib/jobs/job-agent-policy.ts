@@ -31,13 +31,16 @@ export const jobAgentPreferencesSchema = z.object({
   platforms: z.array(jobAgentPlatformIdSchema).max(JOB_AGENT_PLATFORM_IDS.length),
   learnFromReplies: z.boolean(),
   learnFromOutcomes: z.boolean(),
-  minimumMatchScore: z.number().int().min(0).max(100).optional(),
-  dailyContactLimit: z.number().int().min(1).max(100).optional(),
-  autoSendResume: z.boolean().optional()
+  minimumMatchScore: z.number().int().min(0).max(100),
+  dailyContactLimit: z.number().int().min(1).max(100),
+  autoSendResume: z.boolean()
 })
 
 const persistedJobAgentPreferencesSchema = jobAgentPreferencesSchema.extend({
-  platforms: z.array(legacyJobAgentPlatformIdSchema).max(9)
+  platforms: z.array(legacyJobAgentPlatformIdSchema).max(9),
+  minimumMatchScore: jobAgentPreferencesSchema.shape.minimumMatchScore.optional(),
+  dailyContactLimit: jobAgentPreferencesSchema.shape.dailyContactLimit.optional(),
+  autoSendResume: jobAgentPreferencesSchema.shape.autoSendResume.optional()
 })
 
 export type JobAgentPreferences = z.infer<typeof jobAgentPreferencesSchema>
@@ -68,7 +71,10 @@ export function parseJobAgentPreferences(value: string | null): JobAgentPreferen
       ))
     return {
       ...parsed.data,
-      platforms: platforms.length ? platforms : [...JOB_AGENT_PLATFORM_IDS]
+      platforms: platforms.length ? platforms : [...JOB_AGENT_PLATFORM_IDS],
+      minimumMatchScore: parsed.data.minimumMatchScore ?? DEFAULT_JOB_AGENT_PREFERENCES.minimumMatchScore,
+      dailyContactLimit: parsed.data.dailyContactLimit ?? DEFAULT_JOB_AGENT_PREFERENCES.dailyContactLimit,
+      autoSendResume: parsed.data.autoSendResume ?? false
     }
   } catch {
     return DEFAULT_JOB_AGENT_PREFERENCES

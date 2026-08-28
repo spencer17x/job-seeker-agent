@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
-import type { ResumeData } from '../../lib/resume-model'
+import { createResumeDraft, type ResumeData } from '../../lib/resume-model'
 
 const resumeText = 'Ada Candidate, Platform Engineer, built reliable TypeScript platforms.'
 const resume: ResumeData = {
@@ -9,6 +9,12 @@ const resume: ResumeData = {
   experiences: [], projects: [], education: [], certifications: [], awards: [], languages: [], openSource: [],
   metadata: { source: 'paste', locale: 'en', updatedAt: '2026-08-01T08:00:00.000Z' }
 }
+const draftWithoutEvidence = createResumeDraft(resume, {
+  id: 'missing-evidence-draft',
+  name: 'Ada Resume',
+  source: 'paste',
+  now: '2026-08-01T08:00:00.000Z'
+})
 
 async function json(route: Route, body: unknown) {
   await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
@@ -55,6 +61,60 @@ test('exposes only BOSS Zhipin', async ({ page }, testInfo) => {
   expect(discoveryRequests).toBe(0)
 })
 
+test('blocks matching until a missing Career Evidence import is repaired', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'Desktop evidence-readiness workflow')
+  await page.addInitScript((draft) => localStorage.setItem('job-seeker-agent-drafts-v1', JSON.stringify({
+    version: 1,
+    state: { activeDraftId: draft.id, drafts: [draft] }
+  })), draftWithoutEvidence)
+  await page.goto('/en/jobs/opportunities')
+
+  await expect(page.getByText(/Career Evidence is not saved locally/)).toBeVisible()
+  await page.getByRole('link', { name: 'Repair Career Evidence' }).click()
+  await expect(page).toHaveURL(/\/en\/jobs\/profile$/u)
+  await page.getByRole('button', { name: 'Retry local evidence import' }).click()
+  await expect(page.getByRole('region', { name: 'Career evidence' }).getByText('Ada Resume')).toBeVisible()
+  await page.getByRole('link', { name: 'Opportunities', exact: true }).click()
+  await expect(page.getByText(/Career Evidence is not saved locally/)).toHaveCount(0)
+})
+
+test('manages strategy memory independently from career and application data', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'Desktop strategy-memory workflow')
+  await page.addInitScript(() => localStorage.setItem('job-seeker-agent-job-strategy-memory-v1', JSON.stringify({
+    version: 1,
+    enabled: true,
+    entries: [{
+      id: 'strategy-e2e',
+      appliedAt: '2026-08-20T09:00:00.000Z',
+      simulation: {
+        version: 1,
+        sampleSize: 20,
+        recommendedMinimumMatchScore: 70,
+        recommendedDailyContactLimit: 5,
+        recommendedAutonomy: 'approval',
+        recommendedAutoSendResume: false,
+        signals: { conversations: 20, recruiterReplies: 5, resumeRequests: 0, interviewInvites: 1, offers: 0, rejections: 1, localApplications: 2 },
+        reasonCodes: ['reply-observed'],
+        simulatedAt: '2026-08-20T08:00:00.000Z'
+      },
+      settings: { minimumMatchScore: 70, dailyContactLimit: 5, autonomy: 'approval', autoSendResume: false }
+    }]
+  })))
+  await page.goto('/en/jobs')
+
+  await expect(page.getByText('1 applied versions')).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Export memory' })).toHaveAttribute('download', 'job-seeker-agent-strategy-memory.json')
+  await page.getByRole('button', { name: 'Disable learning' }).click()
+  await expect.poll(() => page.evaluate(() => JSON.parse(
+    localStorage.getItem('job-seeker-agent-job-strategy-memory-v1') ?? '{}'
+  ).enabled)).toBe(false)
+  await page.getByRole('button', { name: 'Clear memory' }).click()
+  await page.getByRole('button', { name: 'Clear strategy memory' }).click()
+  await expect.poll(() => page.evaluate(() => JSON.parse(
+    localStorage.getItem('job-seeker-agent-job-strategy-memory-v1') ?? '{}'
+  ).entries?.length)).toBe(0)
+})
+
 test('switches backend sections without an RSC navigation request', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'Desktop shallow-navigation coverage')
   await page.goto('/en/jobs')
@@ -67,12 +127,15 @@ test('switches backend sections without an RSC navigation request', async ({ pag
   expect(requests.filter((url) => url.includes('_rsc=') || url.includes('.rsc'))).toEqual([])
 })
 
-test('starts with resume upload instead of running before setup', async ({ page }, testInfo) => {
+test('collects a job goal before resume upload and does not run before setup', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'Desktop first-run setup coverage')
   await page.goto('/en/jobs')
   await page.getByRole('link', { name: 'Start setup' }).click()
 
   await expect(page).toHaveURL(/\/en\/jobs\/setup$/u)
+  await expect(page.getByRole('heading', { name: 'Describe the job you want' })).toBeVisible()
+  await page.getByRole('textbox', { name: 'My job-search goal' }).fill('Platform engineering roles in Shanghai')
+  await page.getByRole('button', { name: 'Let Agent analyze goal' }).click()
   await expect(page.getByRole('heading', { name: 'Upload a trusted resume' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Continue to analysis' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Pause' })).toHaveCount(0)

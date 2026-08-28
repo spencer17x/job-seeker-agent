@@ -16,9 +16,11 @@ export type AnalyzedJobGoal = {
   locations: string[]
   minimumSalary?: number
   maximumSalary?: number
+  experienceLevels: string[]
   workplaceTypes: JobWorkplaceType[]
   employmentTypes: JobEmploymentType[]
   preferredTerms: string[]
+  excludedTerms: string[]
 }
 
 export function analyzeJobGoalDescription(description: string): AnalyzedJobGoal {
@@ -27,6 +29,9 @@ export function analyzeJobGoalDescription(description: string): AnalyzedJobGoal 
   const titles = knownTitles.filter((title) => compact.toLocaleLowerCase().includes(
     title.replace(/\s+/gu, '').toLocaleLowerCase()
   ))
+  if (/(前端|front[- ]?end)/iu.test(text)) titles.push('前端工程师')
+  if (/(全栈|full[- ]?stack)/iu.test(text)) titles.push('全栈工程师')
+  if (/(后端|back[- ]?end)/iu.test(text)) titles.push('后端工程师')
   const locations = knownCities.filter((city) => compact.includes(city))
   const workplaceTypes: JobWorkplaceType[] = []
   if (/(远程|remote|居家办公)/iu.test(text)) workplaceTypes.push('remote')
@@ -35,9 +40,12 @@ export function analyzeJobGoalDescription(description: string): AnalyzedJobGoal 
   const employmentTypes: JobEmploymentType[] = []
   if (/(全职|full[- ]?time)/iu.test(text)) employmentTypes.push('full-time')
   if (/(兼职|part[- ]?time)/iu.test(text)) employmentTypes.push('part-time')
-  if (/(合同制|外包|contract)/iu.test(text)) employmentTypes.push('contract')
+  const excludesOutsourcing = /(?:不考虑|不要|排除|拒绝|不接受|no|exclude|without)\s*(?:任何)?\s*(?:外包|outsourc(?:e|ing)?)/iu.test(text)
+  const excludedOutsourcingTerm = /外包/u.test(text) ? '外包' : 'outsourcing'
+  if (/(合同制|contract)/iu.test(text) && !excludesOutsourcing) employmentTypes.push('contract')
   if (/(实习|intern)/iu.test(text)) employmentTypes.push('internship')
   const salary = parseSalaryRange(text)
+  const experienceLevels = parseExperienceLevels(text)
   const preferredTerms = [
     'AI Agent', 'RAG', 'LangGraph', 'TypeScript', 'React', 'Next.js',
     'React Native', 'Node.js', '远程', '交易系统', '支付', '钱包'
@@ -46,19 +54,39 @@ export function analyzeJobGoalDescription(description: string): AnalyzedJobGoal 
     titles: [...new Set(titles)],
     locations: [...new Set(locations)],
     ...salary,
+    experienceLevels,
     workplaceTypes,
     employmentTypes,
-    preferredTerms
+    preferredTerms,
+    excludedTerms: excludesOutsourcing ? [excludedOutsourcingTerm] : []
   }
 }
 
 function parseSalaryRange(text: string): Pick<AnalyzedJobGoal, 'minimumSalary' | 'maximumSalary'> {
-  const match = /(?:月薪|薪资|工资)?\s*(\d{1,3}(?:\.\d+)?)\s*(k|千|万)?\s*(?:-|到|至|~|～)\s*(\d{1,3}(?:\.\d+)?)\s*(k|千|万)?/iu.exec(text)
-  if (!match) return {}
-  const minimumSalary = salaryValue(match[1], match[2] || match[4])
-  const maximumSalary = salaryValue(match[3], match[4] || match[2])
-  if (!minimumSalary || !maximumSalary || maximumSalary < minimumSalary) return {}
-  return { minimumSalary, maximumSalary }
+  const prefixedRange = /(?:月薪|薪资|工资|monthly\s+salary|salary)\s*(\d{1,3}(?:\.\d+)?)\s*(k|千|万)?\s*(?:-|到|至|~|～)\s*(\d{1,3}(?:\.\d+)?)\s*(k|千|万)?/iu.exec(text)
+  const unitRange = /(\d{1,3}(?:\.\d+)?)\s*(k|千|万)\s*(?:-|到|至|~|～)\s*(\d{1,3}(?:\.\d+)?)\s*(k|千|万)?/iu.exec(text)
+  const range = prefixedRange ?? unitRange
+  if (range) {
+    const minimumSalary = salaryValue(range[1], range[2] || range[4])
+    const maximumSalary = salaryValue(range[3], range[4] || range[2])
+    if (!minimumSalary || !maximumSalary || maximumSalary < minimumSalary) return {}
+    return { minimumSalary, maximumSalary }
+  }
+
+  const minimum = /(?:月薪|薪资|工资|monthly\s+salary|salary)?\s*(?:至少|不低于|最低|起薪|at\s+least|minimum)\s*(\d{1,3}(?:\.\d+)?)\s*(k|千|万)/iu.exec(text)
+    ?? /(?:月薪|薪资|工资|monthly\s+salary|salary)\s*(\d{1,3}(?:\.\d+)?)\s*(k|千|万)\s*(?:起|以上|\+)?/iu.exec(text)
+  if (minimum) {
+    const minimumSalary = salaryValue(minimum[1], minimum[2])
+    return minimumSalary ? { minimumSalary } : {}
+  }
+  return {}
+}
+
+function parseExperienceLevels(text: string) {
+  const range = /(\d{1,2})\s*(?:-|到|至|~|～)\s*(\d{1,2})\s*(?:年|years?)\s*(?:经验|experience)?/iu.exec(text)
+  if (range && Number(range[2]) >= Number(range[1])) return [`${range[1]}-${range[2]} 年`]
+  const minimum = /(?:至少|不低于|minimum|at\s+least)\s*(\d{1,2})\s*(?:年|years?)\s*(?:经验|experience)?/iu.exec(text)
+  return minimum ? [`${minimum[1]} 年以上`] : []
 }
 
 function salaryValue(raw: string, unit: string | undefined) {

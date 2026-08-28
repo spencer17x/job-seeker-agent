@@ -168,6 +168,70 @@ export type DomainEntityMap = {
 export type DomainStoreName = keyof DomainEntityMap
 export type DomainAccessMode = 'readonly' | 'readwrite'
 
+export type DomainQueryIndexMap = {
+  jobRequirements: {
+    byJobId: string
+  }
+  resumeVariants: {
+    bySourceDraftId: string
+    byTargetJobId: string
+  }
+  optimizationRuns: {
+    bySourceDraftId: string
+    byTargetJobId: string
+  }
+  jobRecommendations: {
+    byPostingId: string
+    bySearchProfileId: string
+    bySourceDraftId: string
+  }
+  applicationRecords: {
+    byPostingId: string
+    bySourceDraftId: string
+    byTargetJobId: string
+    byResumeVariantId: string
+    byStatus: ApplicationRecord['status']
+  }
+  bossConversationThreads: {
+    byApplicationId: string
+    byStatus: BossConversationThread['status']
+  }
+  bossConversationMessages: {
+    byThreadId: string
+    byStatus: BossConversationMessage['status']
+  }
+}
+
+export type IndexedDomainStoreName = keyof DomainQueryIndexMap
+
+const WRITE_TRANSACTION_DEPENDENCIES: Record<DomainStoreName, readonly DomainStoreName[]> = {
+  evidenceSources: ['careerFacts'],
+  careerFacts: ['evidenceSources', 'requirementMatches', 'optimizationRuns', 'jobRecommendations'],
+  targetJobs: ['jobRequirements', 'resumeVariants', 'optimizationRuns', 'jobRecommendations', 'applicationRecords', 'interviewSessions'],
+  jobRequirements: ['targetJobs', 'requirementMatches', 'optimizationRuns'],
+  requirementMatches: ['jobRequirements', 'careerFacts'],
+  resumeVariants: ['targetJobs', 'optimizationRuns', 'applicationRecords'],
+  optimizationRuns: ['targetJobs', 'jobRequirements', 'careerFacts', 'resumeVariants'],
+  jobSources: ['jobPostings'],
+  jobSearchProfiles: ['jobRecommendations'],
+  jobPostings: ['jobSources', 'jobRecommendations', 'applicationRecords'],
+  jobRecommendations: ['jobPostings', 'jobSearchProfiles', 'careerFacts', 'targetJobs'],
+  applicationRecords: ['jobPostings', 'targetJobs', 'resumeVariants', 'bossConversationThreads', 'interviewSessions'],
+  bossConversationThreads: ['applicationRecords', 'bossConversationMessages'],
+  bossConversationMessages: ['bossConversationThreads', 'careerFacts'],
+  interviewSessions: ['applicationRecords', 'targetJobs', 'interviewQuestions', 'interviewReviews'],
+  interviewQuestions: ['interviewSessions'],
+  interviewReviews: ['interviewSessions']
+}
+
+function writeTransactionScope(stores: readonly DomainStoreName[]) {
+  const scope = new Set<DomainStoreName>(stores)
+  for (const store of stores) {
+    for (const dependency of WRITE_TRANSACTION_DEPENDENCIES[store]) scope.add(dependency)
+  }
+  return [...scope]
+}
+
 export type DomainStoreErrorCode =
   | 'INDEXEDDB_UNAVAILABLE'
   | 'OPEN_FAILED'
@@ -202,6 +266,14 @@ export interface DomainStoreTransaction<AllowedStore extends DomainStoreName> {
     id: string
   ): Promise<DomainEntityMap[Store] | undefined>
   list<Store extends AllowedStore>(store: Store): Promise<DomainEntityMap[Store][]>
+  listByIndex<
+    Store extends IndexedDomainStoreName,
+    Index extends keyof DomainQueryIndexMap[Store]
+  >(
+    store: Store & AllowedStore,
+    index: Index,
+    key: DomainQueryIndexMap[Store][Index]
+  ): Promise<DomainEntityMap[Store][]>
   put<Store extends AllowedStore>(
     store: Store,
     value: DomainEntityMap[Store]
@@ -235,6 +307,19 @@ export class IndexedDbDomainStore {
     return this.transaction([store], 'readonly', (transaction) => transaction.list(store))
   }
 
+  listByIndex<
+    Store extends IndexedDomainStoreName,
+    Index extends keyof DomainQueryIndexMap[Store]
+  >(
+    store: Store,
+    index: Index,
+    key: DomainQueryIndexMap[Store][Index]
+  ): Promise<DomainEntityMap[Store][]> {
+    return this.transaction([store], 'readonly', (transaction) => (
+      transaction.listByIndex(store, index, key)
+    ))
+  }
+
   put<Store extends DomainStoreName>(
     store: Store,
     value: DomainEntityMap[Store]
@@ -253,28 +338,16 @@ export class IndexedDbDomainStore {
       'readonly',
       async (transaction) => {
         const [variants, runs, recommendations, applications] = await Promise.all([
-          transaction.list('resumeVariants'),
-          transaction.list('optimizationRuns'),
-          transaction.list('jobRecommendations'),
-          transaction.list('applicationRecords')
+          transaction.listByIndex('resumeVariants', 'bySourceDraftId', sourceDraftId),
+          transaction.listByIndex('optimizationRuns', 'bySourceDraftId', sourceDraftId),
+          transaction.listByIndex('jobRecommendations', 'bySourceDraftId', sourceDraftId),
+          transaction.listByIndex('applicationRecords', 'bySourceDraftId', sourceDraftId)
         ])
         return {
-          resumeVariantIds: variants
-            .filter((variant) => variant.sourceDraftId === sourceDraftId)
-            .map((variant) => variant.id)
-            .sort(compareStrings),
-          optimizationRunIds: runs
-            .filter((run) => run.sourceDraftId === sourceDraftId)
-            .map((run) => run.id)
-            .sort(compareStrings),
-          jobRecommendationIds: recommendations
-            .filter((recommendation) => recommendation.sourceDraftId === sourceDraftId)
-            .map((recommendation) => recommendation.id)
-            .sort(compareStrings),
-          applicationRecordIds: applications
-            .filter((application) => application.sourceDraftId === sourceDraftId)
-            .map((application) => application.id)
-            .sort(compareStrings)
+          resumeVariantIds: variants.map((variant) => variant.id).sort(compareStrings),
+          optimizationRunIds: runs.map((run) => run.id).sort(compareStrings),
+          jobRecommendationIds: recommendations.map((recommendation) => recommendation.id).sort(compareStrings),
+          applicationRecordIds: applications.map((application) => application.id).sort(compareStrings)
         }
       }
     )
@@ -308,7 +381,7 @@ export class IndexedDbDomainStore {
     }
 
     const database = await this.open()
-    const scope = mode === 'readwrite' ? DOMAIN_STORE_NAMES : [...new Set(stores)]
+    const scope = mode === 'readwrite' ? writeTransactionScope(stores) : [...new Set(stores)]
     let nativeTransaction: IDBTransaction
     try {
       nativeTransaction = database.transaction(scope, mode)
@@ -384,6 +457,24 @@ class IndexedDbTransaction implements DomainStoreTransaction<DomainStoreName> {
 
   async list<Store extends DomainStoreName>(store: Store): Promise<DomainEntityMap[Store][]> {
     const values = await requestResult<unknown[]>(this.objectStore(store).getAll())
+    return values.map((value) => parseEntity(store, value))
+  }
+
+  async listByIndex<
+    Store extends IndexedDomainStoreName,
+    Index extends keyof DomainQueryIndexMap[Store]
+  >(
+    store: Store,
+    index: Index,
+    key: DomainQueryIndexMap[Store][Index]
+  ): Promise<DomainEntityMap[Store][]> {
+    let request: IDBRequest<unknown[]>
+    try {
+      request = this.objectStore(store).index(String(index)).getAll(key as IDBValidKey)
+    } catch (error) {
+      throw new DomainStoreError('TRANSACTION_FAILED', `Unable to query ${store}.${String(index)}`, { cause: error })
+    }
+    const values = await requestResult(request)
     return values.map((value) => parseEntity(store, value))
   }
 

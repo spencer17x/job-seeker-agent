@@ -15,9 +15,12 @@ chrome.runtime.onMessage.addListener((message) => {
 })
 
 const reportPageReady = () => chrome.runtime.sendMessage({ action: 'job-agent-page-ready' }).catch(() => undefined)
-if (document.readyState === 'complete') reportPageReady()
-else window.addEventListener('load', reportPageReady, { once: true })
-window.setTimeout(reportPageReady, 2_000)
+const isJobAgentPage = /^\/(?:zh|en)\/jobs(?:\/|$)/u.test(location.pathname)
+if (isJobAgentPage) {
+  if (document.readyState === 'complete') reportPageReady()
+  else window.addEventListener('load', reportPageReady, { once: true })
+  window.setTimeout(reportPageReady, 2_000)
+}
 
 const handleRequest = (event) => {
   const detail = event instanceof CustomEvent ? event.detail : null
