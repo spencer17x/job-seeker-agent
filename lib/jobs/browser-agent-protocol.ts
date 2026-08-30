@@ -4,6 +4,7 @@ import { JOB_AGENT_PLATFORM_IDS, jobAgentPlatformIdSchema } from './job-agent-po
 export const BROWSER_AGENT_REQUEST_EVENT = 'job-seeker-agent:browser-agent:request'
 export const BROWSER_AGENT_RESPONSE_EVENT = 'job-seeker-agent:browser-agent:response'
 export const JOB_AGENT_WAKE_EVENT = 'job-seeker-agent:job-agent:wakeup'
+export const BROWSER_AGENT_PROTOCOL_VERSION = 11
 export const LEGACY_BROWSER_AGENT_REQUEST_EVENT = 'resume-os:browser-agent:request'
 export const LEGACY_BROWSER_AGENT_RESPONSE_EVENT = 'resume-os:browser-agent:response'
 export const LEGACY_JOB_AGENT_WAKE_EVENT = 'resume-os:job-agent:wakeup'
@@ -34,7 +35,7 @@ export type BrowserJobAgentRuntime = z.infer<typeof browserJobAgentRuntimeSchema
 
 export const browserPlatformSessionSchema = z.object({
   platform: jobAgentPlatformIdSchema,
-  state: z.enum(['available', 'login-required', 'unknown']),
+  state: z.enum(['available', 'login-required', 'access-restricted', 'unknown']),
   tabId: z.number().int().positive().optional()
 })
 
@@ -83,7 +84,7 @@ export const browserBossRecipientSchema = z.object({
 
 export type BrowserBossRecipient = z.infer<typeof browserBossRecipientSchema>
 
-export const browserAgentAttentionSchema = z.enum(['login-required', 'captcha-required'])
+export const browserAgentAttentionSchema = z.enum(['login-required', 'captcha-required', 'access-restricted'])
 export type BrowserAgentAttention = z.infer<typeof browserAgentAttentionSchema>
 
 export const browserBossSendReceiptSchema = z.object({
@@ -146,7 +147,7 @@ export const browserBossAdapterDiagnosticSchema = z.object({
   pageKind: z.enum(['search', 'chat', 'other']),
   frameId: z.number().int().min(0),
   conversationFingerprint: z.string().trim().min(1).max(256).optional(),
-  sessionState: z.enum(['available', 'login-required', 'unknown']),
+  sessionState: z.enum(['available', 'login-required', 'access-restricted', 'unknown']),
   counts: z.object({
     jobLinks: z.number().int().min(0).max(1_000),
     editors: z.number().int().min(0).max(100),
@@ -158,7 +159,9 @@ export const browserBossAdapterDiagnosticSchema = z.object({
     pdfInputs: z.number().int().min(0).max(100),
     messageReceipts: z.number().int().min(0).max(1_000),
     attachmentReceipts: z.number().int().min(0).max(1_000),
-    incomingMessages: z.number().int().min(0).max(1_000)
+    incomingMessages: z.number().int().min(0).max(1_000),
+    defaultGreetingRows: z.number().int().min(0).max(1_000).default(0),
+    defaultGreetingRowsWithMessageIds: z.number().int().min(0).max(1_000).default(0)
   }).strict(),
   ready: z.object({
     discovery: z.boolean(),
@@ -174,6 +177,7 @@ export const browserAgentResponseSchema = z.object({
   requestId: z.string().min(1).max(120),
   ok: z.boolean(),
   extensionVersion: z.string().min(1).max(40).optional(),
+  protocolVersion: z.number().int().min(1).max(BROWSER_AGENT_PROTOCOL_VERSION).optional(),
   sessions: z.array(browserPlatformSessionSchema).max(JOB_AGENT_PLATFORM_IDS.length).optional(),
   jobs: z.array(browserBossJobSchema).max(50).optional(),
   jobDetail: browserBossJobDetailSchema.optional(),
@@ -261,11 +265,13 @@ export async function openBossBrowserConversation(input: {
   url: string
   title: string
   company: string
+  openingBody: string
   timeoutMs?: number
 }): Promise<BrowserAgentResponse> {
   const url = new URL(input.url)
   const title = input.title.normalize('NFKC').trim()
   const company = input.company.normalize('NFKC').trim()
+  const openingBody = input.openingBody.trim()
   if (
     url.protocol !== 'https:'
     || url.hostname !== 'www.zhipin.com'
@@ -274,13 +280,15 @@ export async function openBossBrowserConversation(input: {
     || title.length > 300
     || !company
     || company.length > 300
+    || !openingBody
+    || openingBody.length > 5_000
   ) throw new TypeError('BOSS conversation target is invalid')
   url.hash = ''
   return requestBrowserAgent({
     window: input.window,
     timeoutMs: input.timeoutMs ?? 20_000,
     action: 'open-boss-conversation',
-    payload: { url: url.toString(), title, company }
+    payload: { url: url.toString(), title, company, openingBody }
   })
 }
 

@@ -92,11 +92,12 @@ function renderRadar(options: {
   store: IndexedDbDomainStore
   storage?: MemoryStorage | null
   createAdapter?: (kind: 'greenhouse' | 'lever') => JobSourceAdapter
+  sessionPollMs?: number
 }) {
   return render(
     <NextIntlClientProvider locale="en" messages={en}>
       <ResumeDraftProviderCore locale="en" storage={options.storage ?? null}>
-        <JobRadarApp store={options.store} createAdapter={options.createAdapter} />
+        <JobRadarApp store={options.store} createAdapter={options.createAdapter} sessionPollMs={options.sessionPollMs} />
       </ResumeDraftProviderCore>
     </NextIntlClientProvider>
   )
@@ -202,13 +203,18 @@ describe('JobRadarApp', () => {
   it('shows content-free BOSS adapter diagnostics in preferences', async () => {
     mockPathname = '/jobs/preferences'
     const store = createStore()
+    await store.put('jobSearchProfiles', {
+      ...profile,
+      minimumMonthlySalary: 45_000,
+      maximumMonthlySalary: 60_000
+    })
     const respond = (event: Event) => {
       const request = (event as CustomEvent<{ requestId: string; action: string }>).detail
       window.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
         requestId: request.requestId,
         ok: true,
         ...(request.action === 'detect-platforms'
-          ? { sessions: [{ platform: 'boss', state: 'available' }] }
+          ? { protocolVersion: 11, sessions: [{ platform: 'boss', state: 'available' }] }
           : request.action === 'diagnose-boss-adapter'
             ? { diagnostics: [{
                 pageKind: 'chat', frameId: 0, sessionState: 'available',
@@ -224,6 +230,10 @@ describe('JobRadarApp', () => {
     try {
       renderRadar({ store, storage: await trustedStorage(store) })
       expect(await screen.findByRole('heading', { name: 'BOSS adapter diagnostics' })).toBeVisible()
+      await waitFor(() => {
+        expect(screen.getByRole('spinbutton', { name: 'Minimum monthly salary' })).toHaveValue(45_000)
+        expect(screen.getByRole('spinbutton', { name: 'Maximum monthly salary' })).toHaveValue(60_000)
+      })
       expect(await screen.findByText('Conversation page')).toBeVisible()
       expect(screen.getByText('PDF resume upload selectors')).toBeVisible()
       expect(screen.getByText(/PDF inputs 1/)).toBeVisible()
@@ -268,6 +278,102 @@ describe('JobRadarApp', () => {
     )).toMatchObject({ enabled: true, autonomy: 'autopilot' }))
   })
 
+  it('distinguishes an outdated extension bridge from a current BOSS connection', async () => {
+    const store = createStore()
+    const respond = (event: Event) => {
+      const request = (event as CustomEvent<{ requestId: string; action: string }>).detail
+      window.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
+        requestId: request.requestId,
+        ok: true,
+        ...(request.action === 'detect-platforms'
+          ? { sessions: [{ platform: 'boss', state: 'available' }] }
+          : {})
+      } }))
+    }
+    window.addEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
+    try {
+      renderRadar({ store, storage: await trustedStorage(store) })
+      expect(await screen.findByText('Reload the JobSeeker Agent extension')).toBeVisible()
+    } finally {
+      window.removeEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
+    }
+  })
+
+  it('wakes pending signal synchronization after a login or CAPTCHA session recovers', async () => {
+    const store = createStore()
+    await store.put('jobSearchProfiles', { ...profile, platforms: ['boss'] })
+    window.localStorage.setItem('job-seeker-agent:job-agent-preferences:v1', JSON.stringify({
+      version: 2, enabled: true, autonomy: 'autopilot', platforms: ['boss'],
+      learnFromReplies: true, learnFromOutcomes: true,
+      minimumMatchScore: 70, dailyContactLimit: 20, autoSendResume: true
+    }))
+    let detectionCount = 0
+    let signalSyncCount = 0
+    const respond = (event: Event) => {
+      const request = (event as CustomEvent<{ requestId: string; action: string }>).detail
+      if (request.action === 'detect-platforms') detectionCount += 1
+      if (request.action === 'collect-boss-conversation-signals') signalSyncCount += 1
+      window.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
+        requestId: request.requestId,
+        ok: true,
+        ...(request.action === 'detect-platforms'
+          ? {
+              protocolVersion: 11,
+              sessions: [{ platform: 'boss', state: detectionCount === 1 ? 'login-required' : 'available' }]
+            }
+          : request.action === 'collect-boss-conversation-signals'
+            ? { conversationSignals: [] }
+            : {})
+      } }))
+    }
+    window.addEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
+    try {
+      renderRadar({ store, storage: await trustedStorage(store), sessionPollMs: 10 })
+      await waitFor(() => expect(detectionCount).toBeGreaterThanOrEqual(2))
+      await waitFor(() => expect(signalSyncCount).toBeGreaterThanOrEqual(1))
+    } finally {
+      window.removeEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
+    }
+  })
+
+  it('suspends scheduled BOSS work while platform access is restricted', async () => {
+    const store = createStore()
+    await store.put('jobSearchProfiles', { ...profile, platforms: ['boss'] })
+    window.localStorage.setItem('job-seeker-agent:job-agent-preferences:v1', JSON.stringify({
+      version: 2, enabled: true, autonomy: 'autopilot', platforms: ['boss'],
+      learnFromReplies: true, learnFromOutcomes: true,
+      minimumMatchScore: 70, dailyContactLimit: 20, autoSendResume: true
+    }))
+    const configuredStates: boolean[] = []
+    const respond = (event: Event) => {
+      const request = (event as CustomEvent<{ requestId: string; action: string; payload?: { enabled?: boolean } }>).detail
+      if (request.action === 'configure-job-agent') configuredStates.push(request.payload?.enabled === true)
+      window.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
+        requestId: request.requestId,
+        ok: true,
+        ...(request.action === 'detect-platforms'
+          ? { protocolVersion: 11, sessions: [{ platform: 'boss', state: 'access-restricted' }] }
+          : request.action === 'configure-job-agent'
+            ? { jobAgentRuntime: {
+                enabled: false, intervalMinutes: 15, pendingCount: 0, missedRunCount: 0,
+                offlineReason: 'none'
+              } }
+            : {})
+      } }))
+    }
+    window.addEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
+    try {
+      renderRadar({ store, storage: await trustedStorage(store) })
+      expect(await screen.findByRole('heading', { name: 'Agent is suspended' })).toBeVisible()
+      expect(screen.getByText('BOSS access restricted')).toBeVisible()
+      expect(screen.getByText(/stopped platform requests and preserved the queue/)).toBeVisible()
+      await waitFor(() => expect(configuredStates).toContain(false))
+      expect(configuredStates).not.toContain(true)
+    } finally {
+      window.removeEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
+    }
+  })
+
   it('migrates the legacy Resume OS Agent preference key', async () => {
     const store = createStore()
     await store.put('jobSearchProfiles', { ...profile, platforms: ['boss'] })
@@ -304,7 +410,7 @@ describe('JobRadarApp', () => {
       window.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
         requestId: request.requestId,
         ok: true,
-        ...(request.action === 'detect-platforms' ? { sessions: [{ platform: 'boss', state: 'available' }] } : { jobs: [] })
+        ...(request.action === 'detect-platforms' ? { protocolVersion: 11, sessions: [{ platform: 'boss', state: 'available' }] } : { jobs: [] })
       } }))
     }
     window.addEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
@@ -376,6 +482,7 @@ describe('BossConversationQueue', () => {
       />
     </NextIntlClientProvider>)
     expect(screen.getByText('Waiting for browser verification of the BOSS recipient')).toBeVisible()
+    expect(screen.getByText('Recruitment stage: Preparing outreach')).toBeVisible()
     expect(screen.getByText('Linked career evidence: 1')).toBeVisible()
     const editor = screen.getByRole('textbox', { name: 'Outbound message' })
     await user.clear(editor)

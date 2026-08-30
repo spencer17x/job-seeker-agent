@@ -52,6 +52,7 @@ import type { BossConversationMessage, BossConversationThread } from '@/lib/jobs
 import { loadJobWorkspaceSnapshot } from '@/lib/jobs/job-workspace'
 import { formatMonthlyCompensation, recommendationReasonMessageKey, sanitizeJobDisplayText } from '@/lib/jobs/job-display'
 import {
+  BROWSER_AGENT_PROTOCOL_VERSION,
   configureBrowserJobAgent,
   detectBrowserAgentSessions,
   diagnoseBossBrowserAdapter,
@@ -141,9 +142,10 @@ export type JobRadarAppProps = {
   appId?: AppId
   store?: IndexedDbDomainStore
   createAdapter?: (kind: SourceKind) => JobSourceAdapter
+  sessionPollMs?: number
 }
 
-export function JobRadarApp({ store: storeOverride, createAdapter = createSameOriginJobSourceAdapter }: JobRadarAppProps = {}) {
+export function JobRadarApp({ store: storeOverride, createAdapter = createSameOriginJobSourceAdapter, sessionPollMs = 30_000 }: JobRadarAppProps = {}) {
   const t = useTranslations('jobRadar')
   const desktopT = useTranslations('desktop')
   const locale = useLocale()
@@ -168,6 +170,7 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
   const [agentPreferencesHydrated, setAgentPreferencesHydrated] = useState(false)
   const [browserSessions, setBrowserSessions] = useState<BrowserPlatformSession[]>([])
   const [browserAgentAvailable, setBrowserAgentAvailable] = useState(false)
+  const [browserAgentNeedsUpdate, setBrowserAgentNeedsUpdate] = useState(false)
   const [adapterDiagnostics, setAdapterDiagnostics] = useState<BrowserBossAdapterDiagnostic[]>([])
   const [browserJobRuntime, setBrowserJobRuntime] = useState<BrowserJobAgentRuntime | null>(null)
   const [diagnosingAdapter, setDiagnosingAdapter] = useState(false)
@@ -179,10 +182,15 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
   const [notice, setNotice] = useState('')
   const activeBrowserCyclesRef = useRef(new Set<string>())
   const loadGenerationRef = useRef(0)
+  const browserSessionAvailableRef = useRef(false)
+  const startingAgentRef = useRef(false)
   const savedSearchProfile = profiles[0]
   const agentSetupComplete = trustedDraft && Boolean(savedSearchProfile?.titles.length)
   const agentExecutionEnabled = agentPreferences.enabled && agentSetupComplete
-  const agentRunning = agentExecutionEnabled && browserAgentAvailable
+  const bossSessionState = browserSessions.find((session) => session.platform === 'boss')?.state
+  const bossSessionRestricted = bossSessionState === 'access-restricted'
+  const browserExecutionEnabled = agentExecutionEnabled && !bossSessionRestricted
+  const agentRunning = browserExecutionEnabled && browserAgentAvailable
 
   const load = useCallback(async () => {
     const generation = loadGenerationRef.current + 1
@@ -218,7 +226,7 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
     store,
     activeDraft,
     trustedDraft,
-    browserAgentAvailable,
+    browserAgentAvailable: browserAgentAvailable && !bossSessionRestricted,
     sources,
     profiles,
     postings,
@@ -283,19 +291,41 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
   }, [activeDraft, agentPreferencesHydrated, agentSetupComplete, evidenceCheckedDraftId, loaded, trustedDraftSource])
   useEffect(() => {
     let active = true
-    void detectBrowserAgentSessions({ window }).then((response) => {
-      if (!active) return
-      const available = response.ok
-      setBrowserAgentAvailable(available)
-      setBrowserSessions(response.sessions ?? [])
-      if (available) {
-        void conversationController.syncSignals().then(() => conversationController.drainAutopilotQueue())
-        void runBossAdapterDiagnostics()
-        void refreshBrowserJobRuntime()
+    let checking = false
+    const refresh = async () => {
+      if (!active || checking) return
+      checking = true
+      try {
+        const response = await detectBrowserAgentSessions({ window })
+        if (!active) return
+        const bridgeAvailable = response.ok && response.protocolVersion === BROWSER_AGENT_PROTOCOL_VERSION
+        setBrowserAgentNeedsUpdate(response.ok && response.protocolVersion !== BROWSER_AGENT_PROTOCOL_VERSION)
+        const sessionAvailable = Boolean(
+          response.sessions?.some((session) => session.platform === 'boss' && session.state === 'available')
+        )
+        const sessionRecovered = sessionAvailable && !browserSessionAvailableRef.current
+        browserSessionAvailableRef.current = sessionAvailable
+        setBrowserAgentAvailable(bridgeAvailable)
+        setBrowserSessions(response.sessions ?? [])
+        if (bridgeAvailable && sessionRecovered) {
+          const signalStatus = await conversationController.syncSignals()
+          if (agentExecutionEnabled && signalStatus !== 'blocked') {
+            await conversationController.drainAutopilotQueue()
+          }
+          void runBossAdapterDiagnostics()
+          void refreshBrowserJobRuntime()
+        }
+      } finally {
+        checking = false
       }
-    })
-    return () => { active = false }
-  }, [conversationController.syncSignals])
+    }
+    void refresh()
+    const interval = window.setInterval(() => { void refresh() }, sessionPollMs)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [agentExecutionEnabled, conversationController.drainAutopilotQueue, conversationController.syncSignals, sessionPollMs])
   useEffect(() => {
     const refresh = () => { void load() }
     window.addEventListener(ACTIVE_WORKFLOW_CHANGED_EVENT, refresh)
@@ -309,12 +339,12 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
   useEffect(() => {
     if (!browserAgentAvailable) return
     const timeout = window.setTimeout(() => {
-      void configureBrowserJobAgent({ window, enabled: agentExecutionEnabled, intervalMinutes: 15 }).then((response) => {
+      void configureBrowserJobAgent({ window, enabled: browserExecutionEnabled, intervalMinutes: 15 }).then((response) => {
         if (response.jobAgentRuntime) setBrowserJobRuntime(response.jobAgentRuntime)
       })
     }, 0)
     return () => window.clearTimeout(timeout)
-  }, [agentExecutionEnabled, browserAgentAvailable])
+  }, [browserAgentAvailable, browserExecutionEnabled])
   useEffect(() => {
     const wake = (event: Event) => {
       const parsed = readBrowserJobAgentCycle(event)
@@ -322,12 +352,20 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
       activeBrowserCyclesRef.current.add(parsed.data.id)
       const run = async () => {
         try {
-          if (!agentExecutionEnabled || !profileController.titles.trim() || discoveryController.busySourceId) {
+          if (!browserExecutionEnabled || !profileController.titles.trim() || discoveryController.busySourceId) {
             const response = await reportBrowserJobAgentCycle({ window, cycleId: parsed.data.id, status: 'skipped' })
             if (response.jobAgentRuntime) setBrowserJobRuntime(response.jobAgentRuntime)
             return
           }
-          await Promise.all([discoveryController.searchMarket(), conversationController.syncSignals()])
+          const [, signalStatus] = await Promise.all([
+            discoveryController.searchMarket(),
+            conversationController.syncSignals()
+          ])
+          if (signalStatus === 'blocked') {
+            const response = await reportBrowserJobAgentCycle({ window, cycleId: parsed.data.id, status: 'skipped' })
+            if (response.jobAgentRuntime) setBrowserJobRuntime(response.jobAgentRuntime)
+            return
+          }
           await conversationController.drainAutopilotQueue()
           const response = await reportBrowserJobAgentCycle({ window, cycleId: parsed.data.id, status: 'completed' })
           if (response.jobAgentRuntime) setBrowserJobRuntime(response.jobAgentRuntime)
@@ -346,7 +384,7 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
       window.removeEventListener(JOB_AGENT_WAKE_EVENT, wake)
       window.removeEventListener(LEGACY_JOB_AGENT_WAKE_EVENT, wake)
     }
-  }, [agentExecutionEnabled, conversationController.syncSignals, discoveryController.busySourceId, discoveryController.searchMarket, profileController.titles])
+  }, [browserExecutionEnabled, conversationController.syncSignals, discoveryController.busySourceId, discoveryController.searchMarket, profileController.titles])
 
   function toggleJobAgent() {
     if (!agentSetupComplete) return
@@ -358,6 +396,8 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
   }
 
   async function startConfiguredAgent() {
+    if (startingAgentRef.current) return
+    startingAgentRef.current = true
     const managedPreferences: JobAgentPreferences = {
       ...agentPreferences,
       version: 2,
@@ -365,14 +405,23 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
       autonomy: 'autopilot',
       autoSendResume: true
     }
-    setAgentPreferences(managedPreferences)
-    window.localStorage.setItem(JOB_AGENT_PREFERENCES_KEY, serializeJobAgentPreferences(managedPreferences))
-    navigateJobWorkspace(locale, '/jobs/opportunities')
-    await Promise.all([
-      discoveryController.searchMarket({ managed: true }),
-      conversationController.syncSignals()
-    ])
-    await conversationController.drainAutopilotQueue()
+    try {
+      setAgentPreferences(managedPreferences)
+      window.localStorage.setItem(JOB_AGENT_PREFERENCES_KEY, serializeJobAgentPreferences(managedPreferences))
+      if (bossSessionRestricted) {
+        setNotice(t('jobAgent.userAttention.access-restricted'))
+        navigateJobWorkspace(locale, '/jobs')
+        return
+      }
+      navigateJobWorkspace(locale, '/jobs/opportunities')
+      const [, signalStatus] = await Promise.all([
+        discoveryController.searchMarket({ managed: true }),
+        conversationController.syncSignals()
+      ])
+      if (signalStatus !== 'blocked') await conversationController.drainAutopilotQueue()
+    } finally {
+      startingAgentRef.current = false
+    }
   }
 
   async function runBossAdapterDiagnostics() {
@@ -452,7 +501,7 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
     return () => window.clearTimeout(timeout)
   }, [discoveryController.prepareManagedVariants, managedMode, trustedDraft, unmanagedVariantCount])
   useEffect(() => {
-    if (!managedMode || !browserAgentAvailable || pendingMessages === 0) return
+    if (!managedMode || !browserAgentAvailable || pendingMessages === 0 || startingAgentRef.current) return
     const timeout = window.setTimeout(() => { void conversationController.drainAutopilotQueue() }, 0)
     return () => window.clearTimeout(timeout)
   }, [browserAgentAvailable, conversationController.drainAutopilotQueue, managedMode, pendingMessages])
@@ -463,6 +512,40 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
     interviews: applications.filter((item) => item.status === 'interviewing').length,
     offers: applications.filter((item) => item.status === 'offered').length
   }
+  const postingByIdForActivity = new Map(postings.map((posting) => [posting.id, posting]))
+  const applicationByIdForActivity = new Map(applications.map((application) => [application.id, application]))
+  const threadByIdForActivity = new Map(conversationThreads.map((thread) => [thread.id, thread]))
+  const activityEvents = [
+    ...postings.map((posting) => ({
+      id: `posting:${posting.id}`,
+      at: posting.lastCheckedAt,
+      kind: 'posting' as const,
+      title: t('workspace.activityPosting', { title: posting.title }),
+      detail: posting.company
+    })),
+    ...applications.map((application) => {
+      const posting = postingByIdForActivity.get(application.postingId)
+      return {
+        id: `application:${application.id}`,
+        at: application.updatedAt,
+        kind: 'application' as const,
+        title: t('workspace.activityApplication', { title: posting?.title ?? t('unknown') }),
+        detail: t(`application.status.${application.status}`)
+      }
+    }),
+    ...conversationMessages.map((message) => {
+      const thread = threadByIdForActivity.get(message.threadId)
+      const application = thread ? applicationByIdForActivity.get(thread.applicationId) : undefined
+      const posting = application ? postingByIdForActivity.get(application.postingId) : undefined
+      return {
+        id: `message:${message.id}`,
+        at: message.updatedAt,
+        kind: 'message' as const,
+        title: t('workspace.activityMessage', { title: posting?.title ?? t('unknown') }),
+        detail: t(`jobAgent.messageStatus.${message.status}`)
+      }
+    })
+  ].sort((left, right) => right.at.localeCompare(left.at) || left.id.localeCompare(right.id)).slice(0, 50)
   const navItems: Array<{ id: JobWorkspaceSection; href: string; icon: typeof LayoutDashboard }> = [
     { id: 'overview', href: '/jobs', icon: LayoutDashboard },
     { id: 'opportunities', href: '/jobs/opportunities', icon: BriefcaseBusiness },
@@ -486,13 +569,14 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
       <div className="job-workspace__sidebar-footer ml-auto flex shrink-0 gap-1 lg:mt-auto lg:ml-0 lg:grid lg:border-t lg:border-slate-200 lg:pt-4"><Link className={navLinkClass(workspaceSection === 'setup' || workspaceSection === 'preferences')} href="/jobs/setup" data-active={workspaceSection === 'setup' || workspaceSection === 'preferences'}><SlidersHorizontal size={17} aria-hidden="true" /><span>{t('workspace.nav.preferences')}</span></Link><Link className={navLinkClass(workspaceSection === 'profile')} href="/jobs/profile" data-active={workspaceSection === 'profile'} aria-label={activeDraft?.data.profile.name || t('workspace.candidate')}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-slate-900 text-xs font-semibold text-white">{activeDraft?.data.profile.name?.slice(0, 1) || 'R'}</span><strong className="hidden min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-sm lg:block">{activeDraft?.data.profile.name || t('workspace.candidate')}</strong></Link></div>
     </aside>
     <section className="job-workspace__main min-h-0 min-w-0 overflow-auto bg-slate-50">
-      <header className="job-workspace__topbar sticky top-[65px] z-10 flex min-h-16 items-center justify-between gap-4 border-b border-slate-200 bg-white/95 px-5 backdrop-blur lg:top-0 lg:min-h-20 lg:px-8"><h1 className="text-lg font-semibold tracking-tight text-slate-950">{t(`workspace.pageTitle.${workspaceSection}`)}</h1><div className="flex items-center gap-3"><span className="inline-flex items-center gap-2 text-sm text-slate-600" data-connected={browserAgentAvailable}><i className={cn('size-2 rounded-full', browserAgentAvailable ? 'bg-emerald-500' : 'bg-slate-400')} />{browserAgentAvailable ? t('workspace.connected') : t('workspace.disconnected')}</span><Link className={buttonVariants({ variant: 'ghost', size: 'icon' })} href="/jobs/settings" aria-label={t('workspace.settings')}><Settings2 size={18} /></Link></div></header>
+      <header className="job-workspace__topbar sticky top-[65px] z-10 flex min-h-16 items-center justify-between gap-4 border-b border-slate-200 bg-white/95 px-5 backdrop-blur lg:top-0 lg:min-h-20 lg:px-8"><h1 className="text-lg font-semibold tracking-tight text-slate-950">{t(`workspace.pageTitle.${workspaceSection}`)}</h1><div className="flex items-center gap-3"><span className="inline-flex items-center gap-2 text-sm text-slate-600" data-connected={browserAgentAvailable && !bossSessionRestricted}><i className={cn('size-2 rounded-full', browserAgentNeedsUpdate || bossSessionRestricted ? 'bg-amber-500' : browserAgentAvailable ? 'bg-emerald-500' : 'bg-slate-400')} />{browserAgentNeedsUpdate ? t('workspace.extensionUpdateRequired') : bossSessionRestricted ? t('workspace.accessRestricted') : browserAgentAvailable ? t('workspace.connected') : t('workspace.disconnected')}</span><Link className={buttonVariants({ variant: 'ghost', size: 'icon' })} href="/jobs/settings" aria-label={t('workspace.settings')}><Settings2 size={18} /></Link></div></header>
       {error ? <p className="job-workspace__alert" data-tone="error" role="alert">{error}</p> : null}
+      {bossSessionRestricted ? <p className="job-workspace__alert" data-tone="error" role="status">{t('jobAgent.userAttention.access-restricted')}</p> : null}
       {notice ? <p className="job-workspace__alert" data-tone="success" role="status">{notice}</p> : null}
 
       {workspaceSection === 'overview' ? <div className="job-overview">
         <section className="job-overview__agent">
-          <div><span data-running={agentRunning} /><div><h2>{!agentSetupComplete ? t('workspace.setupRequired') : !agentPreferences.enabled ? t('workspace.agentPaused') : browserAgentAvailable ? t('workspace.agentRunning') : t('workspace.agentReady')}</h2><p>{agentSetupComplete ? t('workspace.targetSummary', { titles: savedSearchProfile?.titles.slice(0, 2).join('、') || t('unknown'), location: savedSearchProfile?.locations[0] || t('unknown') }) : t('workspace.setupHelp')}</p></div></div>
+          <div><span data-running={agentRunning} /><div><h2>{!agentSetupComplete ? t('workspace.setupRequired') : !agentPreferences.enabled ? t('workspace.agentPaused') : bossSessionRestricted ? t('workspace.agentSuspended') : browserAgentAvailable ? t('workspace.agentRunning') : t('workspace.agentReady')}</h2><p>{agentSetupComplete ? t('workspace.targetSummary', { titles: savedSearchProfile?.titles.slice(0, 2).join('、') || t('unknown'), location: savedSearchProfile?.locations[0] || t('unknown') }) : t('workspace.setupHelp')}</p></div></div>
           <div>{!agentSetupComplete ? <Link className="job-button job-button--primary" href="/jobs/setup">{t('workspace.setupAction')}<ChevronRight size={16} /></Link> : <><button type="button" className="job-button job-button--secondary" onClick={toggleJobAgent}>{agentPreferences.enabled ? <Pause size={15} /> : <Play size={15} />}{agentPreferences.enabled ? t('workspace.pauseAgent') : t('workspace.startAgent')}</button><Link className="job-button job-button--primary" href={pendingRequirements > 0 ? '/jobs/resumes' : pendingMessages > 0 ? '/jobs/conversations' : '/jobs/opportunities'}>{t(managedMode ? 'workspace.viewProgress' : 'workspace.reviewTasks')}<ChevronRight size={16} /></Link></>}</div>
         </section>
         <JobAgentRuntimeStatus runtime={browserJobRuntime} />
@@ -535,9 +619,9 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
 
       {workspaceSection === 'settings' ? <div className="job-workspace__embedded" role="application" aria-label={desktopT('apps.settings')}><LazySettingsApp appId="settings" /></div> : null}
 
-      {workspaceSection === 'activity' ? <div className="job-workspace__content"><section className="job-section-heading"><div><h2>{t('workspace.activityTitle')}</h2><p>{t('workspace.activityHelp')}</p></div></section><div className="job-activity-list">{postings.slice(0, 12).map((posting) => <article key={posting.id}><span><BriefcaseBusiness size={16} /></span><div><strong>{t('workspace.activityPosting', { title: posting.title })}</strong><p>{posting.company} · {posting.lastCheckedAt.slice(0, 10)}</p></div></article>)}{postings.length === 0 ? <p className="job-workspace__empty">{t('workspace.noActivity')}</p> : null}</div></div> : null}
+      {workspaceSection === 'activity' ? <div className="job-workspace__content"><section className="job-section-heading"><div><h2>{t('workspace.activityTitle')}</h2><p>{t('workspace.activityHelp')}</p></div></section><div className="job-activity-list">{activityEvents.map((event) => <article key={event.id}><span>{event.kind === 'message' ? <MessageSquareText size={16} /> : event.kind === 'application' ? <Send size={16} /> : <BriefcaseBusiness size={16} />}</span><div><strong>{event.title}</strong><p>{event.detail} · {new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(event.at))}</p></div></article>)}{activityEvents.length === 0 ? <p className="job-workspace__empty">{t('workspace.noActivity')}</p> : null}</div></div> : null}
 
-      {workspaceSection === 'preferences' ? <div className="job-preferences"><section><header><h2>{t('workspace.preferencesTitle')}</h2><p>{t('workspace.preferencesHelp')}</p></header><div className="job-preferences__grid"><label>{t('profileName')}<input value={profileController.profileName} onChange={(event) => profileController.setProfileName(event.target.value)} /></label><label>{t('titles')}<input value={profileController.titles} onChange={(event) => profileController.setTitles(event.target.value)} /></label><label>{t('locations')}<input value={profileController.locations} onChange={(event) => profileController.setLocations(event.target.value)} /></label><label>{t('preferredCompanies')}<input value={profileController.preferredCompanies} onChange={(event) => profileController.setPreferredCompanies(event.target.value)} placeholder={t('preferredCompaniesPlaceholder')} /></label><label>{t('requiredTerms')}<input value={profileController.requiredTerms} onChange={(event) => profileController.setRequiredTerms(event.target.value)} /></label><label>{t('preferredTerms')}<input value={profileController.preferredTerms} onChange={(event) => profileController.setPreferredTerms(event.target.value)} /></label><label>{t('excludedTerms')}<input value={profileController.excludedTerms} onChange={(event) => profileController.setExcludedTerms(event.target.value)} /></label></div><button type="button" className="job-button job-button--primary" onClick={() => void profileController.saveProfile()} disabled={!profileController.profileName.trim() || !profileController.titles.trim()}><Save size={15} />{t('saveProfile')}</button></section><section className="job-adapter-diagnostics"><header><div><h2>{t('jobAgent.diagnosticsTitle')}</h2><p>{t('jobAgent.diagnosticsHelp')}</p></div><button type="button" className="job-button job-button--secondary" onClick={() => void runBossAdapterDiagnostics()} disabled={diagnosingAdapter}>{t('jobAgent.runDiagnostics')}</button></header>{adapterDiagnostics.length === 0 ? <div className="job-adapter-diagnostics__empty"><p>{t('jobAgent.diagnosticsEmpty')}</p><a href="https://www.zhipin.com/web/geek/chat" target="_blank" rel="noopener noreferrer">{t('jobAgent.openBossChat')}</a></div> : <div className="job-adapter-diagnostics__list">{adapterDiagnostics.map((diagnostic, index) => <article key={`${diagnostic.pageKind}-${diagnostic.frameId}-${index}`}><header><strong>{t(`jobAgent.diagnosticPage.${diagnostic.pageKind}`)}</strong><span>{t(`jobAgent.session.${diagnostic.sessionState}`)}</span></header><div>{(['discovery', 'conversation', 'messageSend', 'resumeUpload'] as const).map((key) => <p key={key} data-ready={diagnostic.ready[key]}><CheckCircle2 size={14} />{t(`jobAgent.diagnosticReady.${key}`)}</p>)}</div><small>{t('jobAgent.diagnosticCounts', { jobs: diagnostic.counts.jobLinks, editors: diagnostic.counts.editors, send: diagnostic.counts.sendControls, identities: diagnostic.counts.recipientIdentities, conversations: diagnostic.counts.conversationIdentities, names: diagnostic.counts.recipientNames, pdf: diagnostic.counts.pdfInputs })}</small></article>)}</div>}</section><details><summary>{t('importJob')}</summary><p>{t('importJobHelp')}</p><label>{t('clipboardJob')}<textarea value={discoveryController.clipboardJobText} onChange={(event) => discoveryController.setClipboardJobText(event.target.value)} rows={5} placeholder={t('clipboardJobPlaceholder')} /></label><button type="button" className="job-button job-button--secondary" onClick={discoveryController.prefillFromClipboard} disabled={!discoveryController.clipboardJobText.trim()}><ClipboardPaste size={14} />{t('parseClipboardJob')}</button><div className="job-preferences__grid"><label>{t('importUrl')}<input type="url" value={discoveryController.importUrl} onChange={(event) => discoveryController.setImportUrl(event.target.value)} /></label><label>{t('importTitle')}<input value={discoveryController.importTitle} onChange={(event) => discoveryController.setImportTitle(event.target.value)} /></label><label>{t('importCompany')}<input value={discoveryController.importCompany} onChange={(event) => discoveryController.setImportCompany(event.target.value)} /></label><label>{t('importLocation')}<input value={discoveryController.importLocation} onChange={(event) => discoveryController.setImportLocation(event.target.value)} /></label></div><label>{t('importDescription')}<textarea value={discoveryController.importDescription} onChange={(event) => discoveryController.setImportDescription(event.target.value)} rows={6} /></label><button type="button" className="job-button job-button--primary" onClick={() => void discoveryController.importAndAnalyze()} disabled={!trustedDraft || !discoveryController.importUrl.trim() || !discoveryController.importTitle.trim() || !discoveryController.importCompany.trim() || !discoveryController.importDescription.trim()}>{t('importAndAnalyze')}</button></details></div> : null}
+      {workspaceSection === 'preferences' ? <div className="job-preferences"><section><header><h2>{t('workspace.preferencesTitle')}</h2><p>{t('workspace.preferencesHelp')}</p></header><div className="job-preferences__grid"><label>{t('profileName')}<input value={profileController.profileName} onChange={(event) => profileController.setProfileName(event.target.value)} /></label><label>{t('titles')}<input value={profileController.titles} onChange={(event) => profileController.setTitles(event.target.value)} /></label><label>{t('locations')}<input value={profileController.locations} onChange={(event) => profileController.setLocations(event.target.value)} /></label><label>{t('setup.minimumSalary')}<input type="number" min={0} step={1_000} value={profileController.setupValues.minimumSalary} onChange={(event) => profileController.updateSetupValue('minimumSalary', event.target.value)} /></label><label>{t('setup.maximumSalary')}<input type="number" min={0} step={1_000} value={profileController.setupValues.maximumSalary} onChange={(event) => profileController.updateSetupValue('maximumSalary', event.target.value)} /></label><label>{t('preferredCompanies')}<input value={profileController.preferredCompanies} onChange={(event) => profileController.setPreferredCompanies(event.target.value)} placeholder={t('preferredCompaniesPlaceholder')} /></label><label>{t('requiredTerms')}<input value={profileController.requiredTerms} onChange={(event) => profileController.setRequiredTerms(event.target.value)} /></label><label>{t('preferredTerms')}<input value={profileController.preferredTerms} onChange={(event) => profileController.setPreferredTerms(event.target.value)} /></label><label>{t('excludedTerms')}<input value={profileController.excludedTerms} onChange={(event) => profileController.setExcludedTerms(event.target.value)} /></label></div><button type="button" className="job-button job-button--primary" onClick={() => void profileController.saveProfile()} disabled={!profileController.profileName.trim() || !profileController.titles.trim()}><Save size={15} />{t('saveProfile')}</button></section><section className="job-adapter-diagnostics"><header><div><h2>{t('jobAgent.diagnosticsTitle')}</h2><p>{t('jobAgent.diagnosticsHelp')}</p></div><button type="button" className="job-button job-button--secondary" onClick={() => void runBossAdapterDiagnostics()} disabled={diagnosingAdapter}>{t('jobAgent.runDiagnostics')}</button></header>{adapterDiagnostics.length === 0 ? <div className="job-adapter-diagnostics__empty"><p>{t('jobAgent.diagnosticsEmpty')}</p><a href="https://www.zhipin.com/web/geek/chat" target="_blank" rel="noopener noreferrer">{t('jobAgent.openBossChat')}</a></div> : <div className="job-adapter-diagnostics__list">{adapterDiagnostics.map((diagnostic, index) => <article key={`${diagnostic.pageKind}-${diagnostic.frameId}-${index}`}><header><strong>{t(`jobAgent.diagnosticPage.${diagnostic.pageKind}`)}</strong><span>{t(`jobAgent.session.${diagnostic.sessionState}`)}</span></header><div>{(['discovery', 'conversation', 'messageSend', 'resumeUpload'] as const).map((key) => <p key={key} data-ready={diagnostic.ready[key]}><CheckCircle2 size={14} />{t(`jobAgent.diagnosticReady.${key}`)}</p>)}</div><small>{t('jobAgent.diagnosticCounts', { jobs: diagnostic.counts.jobLinks, editors: diagnostic.counts.editors, send: diagnostic.counts.sendControls, identities: diagnostic.counts.recipientIdentities, conversations: diagnostic.counts.conversationIdentities, names: diagnostic.counts.recipientNames, pdf: diagnostic.counts.pdfInputs })}</small></article>)}</div>}</section><details><summary>{t('importJob')}</summary><p>{t('importJobHelp')}</p><label>{t('clipboardJob')}<textarea value={discoveryController.clipboardJobText} onChange={(event) => discoveryController.setClipboardJobText(event.target.value)} rows={5} placeholder={t('clipboardJobPlaceholder')} /></label><button type="button" className="job-button job-button--secondary" onClick={discoveryController.prefillFromClipboard} disabled={!discoveryController.clipboardJobText.trim()}><ClipboardPaste size={14} />{t('parseClipboardJob')}</button><div className="job-preferences__grid"><label>{t('importUrl')}<input type="url" value={discoveryController.importUrl} onChange={(event) => discoveryController.setImportUrl(event.target.value)} /></label><label>{t('importTitle')}<input value={discoveryController.importTitle} onChange={(event) => discoveryController.setImportTitle(event.target.value)} /></label><label>{t('importCompany')}<input value={discoveryController.importCompany} onChange={(event) => discoveryController.setImportCompany(event.target.value)} /></label><label>{t('importLocation')}<input value={discoveryController.importLocation} onChange={(event) => discoveryController.setImportLocation(event.target.value)} /></label></div><label>{t('importDescription')}<textarea value={discoveryController.importDescription} onChange={(event) => discoveryController.setImportDescription(event.target.value)} rows={6} /></label><button type="button" className="job-button job-button--primary" onClick={() => void discoveryController.importAndAnalyze()} disabled={!trustedDraft || !discoveryController.importUrl.trim() || !discoveryController.importTitle.trim() || !discoveryController.importCompany.trim() || !discoveryController.importDescription.trim()}>{t('importAndAnalyze')}</button></details></div> : null}
     </section>
   </main>
 }
@@ -589,9 +673,19 @@ export function BossConversationQueue({
         <p>{thread.recipientName
           ? t('messageRecipient', { name: thread.recipientName })
           : t('messageRecipientPending')}</p>
-        <p>{t('recruitmentStage', { stage: t(`stage.${thread.recruitmentStage}`) })}</p>
+        <p>{t('recruitmentStage', { stage: t(`recruitmentStages.${thread.recruitmentStage}`) })}</p>
         <label>{t('messageDraft')}<textarea defaultValue={message.body} maxLength={5_000} onBlur={(event) => onRevise(message.id, event.target.value)} /></label>
         <small>{t('messageEvidence', { count: message.evidenceFactIds.length })}</small>
+        {message.status === 'failed' ? <small>{message.attemptCount >= 3
+          ? t('messageRetryExhausted', { count: message.attemptCount })
+          : message.nextRetryAt
+            ? t('messageRetryAt', { count: message.attemptCount, value: new Date(message.nextRetryAt) })
+            : t('messageRetryPending', { count: message.attemptCount })}</small> : null}
+        {thread.resumeSendFailureCode ? <small>{thread.resumeSendAttemptCount >= 3
+          ? t('resumeRetryExhausted', { count: thread.resumeSendAttemptCount })
+          : thread.nextResumeRetryAt
+            ? t('resumeRetryAt', { count: thread.resumeSendAttemptCount, value: new Date(thread.nextResumeRetryAt) })
+            : t('resumeRetryPending', { count: thread.resumeSendAttemptCount })}</small> : null}
         {managed && ['awaiting-approval', 'approved', 'sending'].includes(message.status) ? <small>{t('managedQueue')}</small> : null}
         {!managed && message.status === 'awaiting-approval' ? <button type="button" disabled={pendingMessageId === message.id} onClick={() => onVerify(message.id)}>{t('messageVerifyAndApprove')}</button> : null}
         {!managed && message.status === 'approved' ? <button type="button" disabled={pendingMessageId === message.id} onClick={() => onSend(message.id)}>{t('messageSendApproved')}</button> : null}

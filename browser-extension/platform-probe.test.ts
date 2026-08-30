@@ -68,7 +68,7 @@ describe('BOSS page send adapter', () => {
   })
 
   it('opens a unique recruiter conversation only after the BOSS job identity matches', async () => {
-    document.body.innerHTML = '<button type="button">立即沟通</button>'
+    document.body.innerHTML = '<section><h2>周女士</h2><span>云扬</span><span>猎头顾问</span></section><button type="button">立即沟通</button>'
     Object.defineProperty(document.body, 'innerText', {
       configurable: true,
       value: '平台工程师 示例公司 职位描述 负责 TypeScript 平台研发'
@@ -84,23 +84,29 @@ describe('BOSS page send adapter', () => {
     const accepted = await new Promise<{ opened: boolean }>((resolve) => {
       listener?.({
         action: 'open-boss-conversation',
-        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师', company: '示例公司' }
+        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师', company: '示例公司', openingBody: '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？' }
       }, {}, (value) => resolve(value as { opened: boolean }))
     })
-    expect(accepted).toEqual({ opened: true })
+    expect(accepted).toEqual({
+      opened: true,
+      recruiterHint: { recruiterName: '周女士', recruiterCompany: '云扬' }
+    })
     expect(click).toHaveBeenCalledOnce()
     const redactedCompany = await new Promise<{ opened: boolean }>((resolve) => {
       listener?.({
         action: 'open-boss-conversation',
-        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师', company: '某大型互联网公司' }
+        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师', company: '某大型互联网公司', openingBody: '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？' }
       }, {}, (value) => resolve(value as { opened: boolean }))
     })
-    expect(redactedCompany).toEqual({ opened: true })
+    expect(redactedCompany).toEqual({
+      opened: true,
+      recruiterHint: { recruiterName: '周女士', recruiterCompany: '云扬' }
+    })
     expect(click).toHaveBeenCalledTimes(2)
     const rejected = await new Promise<{ opened: boolean }>((resolve) => {
       listener?.({
         action: 'open-boss-conversation',
-        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '数据分析师', company: '示例公司' }
+        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '数据分析师', company: '示例公司', openingBody: '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？' }
       }, {}, (value) => resolve(value as { opened: boolean }))
     })
     expect(rejected).toEqual({ opened: false })
@@ -124,11 +130,295 @@ describe('BOSS page send adapter', () => {
     const response = await new Promise<{ opened: boolean; attention?: string }>((resolve) => {
       listener?.({
         action: 'open-boss-conversation',
-        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师', company: '示例公司' }
+        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师', company: '示例公司', openingBody: '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？' }
       }, {}, (value) => resolve(value as { opened: boolean; attention?: string }))
     })
     expect(response).toEqual({ opened: false, attention: 'captcha-required' })
     expect(click).not.toHaveBeenCalled()
+  })
+
+  it('reports a BOSS 403 restriction before attempting any conversation action', async () => {
+    document.body.innerHTML = '<h2>访问受限</h2><p>您的 IP 存在异常行为，请勿频繁提交刷新请求</p><button type="button">立即沟通</button>'
+    Object.defineProperty(document.body, 'innerText', {
+      configurable: true,
+      value: '访问受限 抱歉，您暂时无法访问此页面 您的 IP 存在异常行为，请勿频繁提交刷新请求'
+    })
+    const click = vi.spyOn(document.querySelector('button')!, 'click')
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('https://www.zhipin.com/web/passport/zp/403.html?code=32'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout, clearTimeout
+    })
+    const session = await new Promise<{ state: string }>((resolve) => {
+      listener?.({ action: 'probe-session' }, {}, (value) => resolve(value as { state: string }))
+    })
+    expect(session).toEqual({ state: 'access-restricted' })
+    const response = await new Promise<{ opened: boolean; attention?: string }>((resolve) => {
+      listener?.({
+        action: 'open-boss-conversation',
+        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师', company: '示例公司', openingBody: '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？' }
+      }, {}, (value) => resolve(value as { opened: boolean; attention?: string }))
+    })
+    expect(response).toEqual({ opened: false, attention: 'access-restricted' })
+    expect(click).not.toHaveBeenCalled()
+  })
+
+  it('binds the newest exact default greeting to one verified recruiter and platform receipt', async () => {
+    const greeting = '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？'
+    document.body.innerHTML = `
+      <ul class="chat-list">
+        <li class="chat-item" data-boss-id="boss-new" data-conversation-id="conversation-new" data-message-id="message-new">
+          <span>昨天</span><span>招聘经理示例公司</span><span>HR</span><span>[送达]</span><span>${greeting}</span>
+        </li>
+      </ul>
+      <section class="chat-conversation" data-boss-id="boss-new" data-conversation-id="conversation-new">
+        <span class="chat-name">招聘经理示例公司</span><span class="recipient-title">HR</span>
+        <div contenteditable="true"></div><button type="button">发送</button>
+      </section>`
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('about:blank'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1 }, clearTimeout, queueMicrotask
+    })
+    const response = await new Promise<Record<string, any>>((resolve) => {
+      expect(listener?.({ action: 'select-boss-conversation', payload: {
+        url: 'https://www.zhipin.com/job_detail/job-1.html',
+        title: '平台工程师',
+        company: '示例公司',
+        openingBody: greeting
+      } }, {}, (value) => resolve(value as Record<string, any>))).toBe(true)
+    })
+    expect(response).toMatchObject({
+      recipient: {
+        platformRecipientId: 'boss-new',
+        conversationId: 'conversation-new',
+        recipientName: '招聘经理示例公司'
+      },
+      sendReceipt: {
+        platformMessageId: 'message-new',
+        conversationId: 'conversation-new',
+        observedBody: greeting,
+        observedStatus: 'delivered'
+      }
+    })
+  })
+
+  it('reconciles the already active exact-title conversation after its list preview changed', async () => {
+    const greeting = '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？'
+    document.body.innerHTML = `
+      <section class="chat-conversation" data-boss-id="boss-active" data-conversation-id="conversation-active">
+        <span class="chat-name">周女士</span><span class="recipient-title">猎头顾问</span>
+        <span class="job-position">AI全栈工程师（猎头职位）</span>
+        <div class="message-item"><span>${greeting}</span><span>已读</span></div>
+        <div contenteditable="true"></div><button type="button">发送</button>
+      </section>`
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('about:blank'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout, clearTimeout
+    })
+    const response = await new Promise<Record<string, any>>((resolve) => {
+      listener?.({ action: 'select-boss-conversation', payload: {
+        url: 'https://www.zhipin.com/job_detail/job-active.html', title: 'AI全栈工程师',
+        company: '杭州', openingBody: greeting
+      } }, {}, (value) => resolve(value as Record<string, any>))
+    })
+    expect(response).toMatchObject({
+      recipient: {
+        platformRecipientId: 'boss-active', conversationId: 'conversation-active', recipientName: '周女士'
+      },
+      sendReceipt: { platformMessageId: expect.stringMatching(/^visible:fnv1a64:/u), observedStatus: 'read' }
+    })
+  })
+
+  it('refuses ambiguous identical greeting rows without a unique target title', async () => {
+    const greeting = '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？'
+    document.body.innerHTML = `
+      <ul class="chat-list">
+        <li class="chat-item" data-boss-id="boss-one" data-conversation-id="conversation-one" data-message-id="message-one">
+          <span>招聘经理一</span><span>HR</span><span>[送达]</span><span>${greeting}</span>
+        </li>
+        <li class="chat-item" data-boss-id="boss-two" data-conversation-id="conversation-two" data-message-id="message-two">
+          <span>招聘经理二</span><span>HR</span><span>[送达]</span><span>${greeting}</span>
+        </li>
+      </ul>`
+    const clicks = [...document.querySelectorAll<HTMLElement>('.chat-item')].map((row) => vi.spyOn(row, 'click'))
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('about:blank'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1 }, clearTimeout, queueMicrotask
+    })
+    const response = await new Promise<Record<string, unknown>>((resolve) => {
+      listener?.({ action: 'select-boss-conversation', payload: {
+        url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师',
+        company: '示例公司', openingBody: greeting
+      } }, {}, (value) => resolve(value as Record<string, unknown>))
+    })
+    expect(response).toEqual({ recipient: null, sendReceipt: null })
+    expect(clicks.every((click) => click.mock.calls.length === 1)).toBe(true)
+  })
+
+  it('disambiguates identical greeting rows by the active conversation job title', async () => {
+    const greeting = '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？'
+    document.body.innerHTML = `
+      <ul class="chat-list">
+        <li id="row-one" class="chat-item"><span>张女士公司甲</span><span>HR</span><span>[送达]</span><span>${greeting}</span></li>
+        <li id="row-two" class="chat-item"><span>杨女士公司乙</span><span>HR</span><span>[送达]</span><span>${greeting}</span></li>
+      </ul>
+      <section class="chat-conversation" data-boss-id="boss-one" data-conversation-id="conversation-one">
+        <span class="chat-name">张女士</span><span class="recipient-title">HR</span>
+        <span class="job-position">其他岗位</span>
+        <div class="message-item" data-message-id="opening-one"><span>${greeting}</span><span>[送达]</span></div>
+        <div contenteditable="true"></div><button type="button">发送</button>
+      </section>`
+    const conversation = document.querySelector<HTMLElement>('.chat-conversation')!
+    const activate = (bossId: string, conversationId: string, name: string, title: string, messageId: string) => {
+      conversation.dataset.bossId = bossId
+      conversation.dataset.conversationId = conversationId
+      conversation.querySelector('.chat-name')!.textContent = name
+      conversation.querySelector('.job-position')!.textContent = title
+      const message = conversation.querySelector<HTMLElement>('.message-item')!
+      message.dataset.messageId = messageId
+    }
+    document.querySelector('#row-one')!.addEventListener('click', () => activate('boss-one', 'conversation-one', '张女士', '其他岗位', 'opening-one'))
+    document.querySelector('#row-two')!.addEventListener('click', () => activate('boss-two', 'conversation-two', '杨女士', '平台工程师', 'opening-two'))
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('about:blank'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1 }, clearTimeout, queueMicrotask
+    })
+    const response = await new Promise<Record<string, any>>((resolve) => {
+      listener?.({ action: 'select-boss-conversation', payload: {
+        url: 'https://www.zhipin.com/job_detail/job-2.html', title: '平台工程师',
+        company: '杭州', openingBody: greeting
+      } }, {}, (value) => resolve(value as Record<string, any>))
+    })
+    expect(response).toMatchObject({
+      recipient: {
+        platformRecipientId: 'boss-two', conversationId: 'conversation-two', recipientName: '杨女士'
+      },
+      sendReceipt: { platformMessageId: 'opening-two', observedStatus: 'delivered' }
+    })
+  })
+
+  it('uses the uniquely visible target company to disambiguate identical greetings', async () => {
+    const greeting = '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？'
+    document.body.innerHTML = `
+      <ul class="chat-list">
+        <li class="chat-item">
+          <span>杨女士同花顺</span><span>HR</span><span>感谢回复</span>
+        </li>
+        <li class="chat-item" data-boss-id="boss-other" data-conversation-id="conversation-other">
+          <span>招聘经理其他公司</span><span>HR</span><span>[送达]</span><span>${greeting}</span>
+        </li>
+      </ul>
+      <section class="chat-conversation" data-boss-id="boss-target" data-conversation-id="conversation-target">
+        <span class="chat-name">杨女士</span><span class="recipient-title">HR</span>
+        <div class="message-item" data-message-id="message-target">
+          <span class="message-content">${greeting}</span><span>[送达]</span>
+        </div>
+        <div contenteditable="true"></div><button type="button">发送</button>
+      </section>`
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('about:blank'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1 }, clearTimeout, queueMicrotask
+    })
+    const response = await new Promise<Record<string, any>>((resolve) => {
+      listener?.({ action: 'select-boss-conversation', payload: {
+        url: 'https://www.zhipin.com/job_detail/job-1.html', title: 'AI Agent工程师',
+        company: '杭州', recruiterName: '杨女士', recruiterCompany: '同花顺', openingBody: greeting
+      } }, {}, (value) => resolve(value as Record<string, any>))
+    })
+    expect(response).toMatchObject({
+      recipient: {
+        platformRecipientId: 'boss-target',
+        conversationId: 'conversation-target',
+        recipientName: '杨女士'
+      },
+      sendReceipt: {
+        platformMessageId: 'message-target',
+        observedStatus: 'delivered'
+      }
+    })
+  })
+
+  it('reselects a posting-bound conversation before sending a custom exact-body reply', async () => {
+    const greeting = '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？'
+    const customBody = '感谢回复，我对平台工程师岗位仍然感兴趣。'
+    document.body.innerHTML = `
+      <ul class="chat-list"><li class="chat-item" data-message-id="opening-1">
+        <span>招聘经理示例公司</span><span>HR</span><span>[送达]</span><span>${greeting}</span>
+      </li></ul>
+      <section class="chat-conversation">
+        <header><span>招聘经理示例公司</span><span>HR</span></header>
+        <div contenteditable="true"></div><button type="button">发送</button>
+      </section>`
+    const send = document.querySelector('button')!
+    send.addEventListener('click', () => {
+      const node = document.createElement('div')
+      node.className = 'message-item'
+      node.dataset.messageId = 'custom-1'
+      const content = document.createElement('span')
+      content.className = 'message-content'
+      content.textContent = customBody
+      const status = document.createElement('span')
+      status.textContent = '[送达]'
+      node.append(content, status)
+      document.body.append(node)
+    })
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('https://www.zhipin.com/web/geek/chat'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1 }, clearTimeout, queueMicrotask
+    })
+    const selected = await new Promise<Record<string, any>>((resolve) => {
+      listener?.({ action: 'select-boss-conversation', payload: {
+        url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师',
+        company: '示例公司', openingBody: greeting
+      } }, {}, (value) => resolve(value as Record<string, any>))
+    })
+    expect(selected.recipient).toMatchObject({
+      platformRecipientId: expect.stringMatching(/^target:/u),
+      conversationId: expect.stringMatching(/^target:/u)
+    })
+    const receipt = await new Promise<Record<string, any>>((resolve) => {
+      listener?.({ action: 'send-boss-message', payload: {
+        messageId: 'local-custom-1', body: customBody,
+        bodyFingerprint: createJobInputFingerprint(customBody),
+        recipient: selected.recipient
+      } }, {}, (value) => resolve(value as Record<string, any>))
+    })
+    expect(receipt.sendReceipt).toMatchObject({
+      platformMessageId: 'custom-1',
+      observedBody: customBody,
+      observedStatus: 'delivered',
+      observedRecipient: selected.recipient
+    })
+    const headerName = document.querySelector('.chat-conversation header span')
+    if (headerName) headerName.textContent = '其他招聘方'
+    const stale = await new Promise<Record<string, any>>((resolve) => {
+      listener?.({ action: 'send-boss-message', payload: {
+        messageId: 'local-custom-stale', body: '不应发送',
+        bodyFingerprint: createJobInputFingerprint('不应发送'),
+        recipient: selected.recipient
+      } }, {}, (value) => resolve(value as Record<string, any>))
+    })
+    expect(stale.sendReceipt).toBeNull()
   })
 
   it('prefers the explicit job-description section over a longer company introduction', async () => {
@@ -327,14 +617,14 @@ describe('BOSS page send adapter', () => {
     const body = '您好，我对平台工程师岗位很感兴趣。'
     const previous = document.createElement('div')
     previous.dataset.messageId = 'platform-message-old'
-    previous.innerHTML = `<span class="message-content"></span><span>已送达</span>`
-    previous.querySelector('.message-content')!.textContent = body
+    previous.innerHTML = `<span class="bubble-text"></span><span>已送达</span>`
+    previous.querySelector('.bubble-text')!.textContent = body
     document.body.append(previous)
     document.querySelector('button')?.addEventListener('click', () => {
       const message = document.createElement('div')
       message.dataset.messageId = 'platform-message-1'
-      message.innerHTML = `<span class="message-content"></span><span>已送达</span>`
-      const content = message.querySelector('.message-content')
+      message.innerHTML = `<span class="bubble-text"></span><span>已送达</span>`
+      const content = message.querySelector('.bubble-text')
       if (content) content.textContent = body
       document.body.append(message)
     })
@@ -390,11 +680,13 @@ describe('BOSS page send adapter', () => {
   })
 
   it('returns only a de-identified signal for a verified incoming interview invitation', async () => {
+    const message = document.createElement('article')
+    message.dataset.messageId = 'incoming-message-1'
     const incoming = document.createElement('div')
     incoming.dataset.direction = 'incoming'
-    incoming.dataset.messageId = 'incoming-message-1'
     incoming.textContent = '想邀请你参加视频面试，请问明天下午几点方便安排？'
-    document.body.append(incoming)
+    message.append(incoming)
+    document.body.append(message)
     let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
     const chrome = {
       runtime: {
@@ -416,10 +708,21 @@ describe('BOSS page send adapter', () => {
   })
 
   it('uploads only the approved PDF and requires an exact platform attachment receipt', async () => {
+    const control = document.createElement('label')
+    control.textContent = '上传附件简历'
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = '.pdf,application/pdf'
-    document.body.append(input)
+    control.append(input)
+    document.body.append(control)
+    const hiddenControl = document.createElement('label')
+    hiddenControl.hidden = true
+    hiddenControl.textContent = '上传附件简历'
+    const hiddenInput = document.createElement('input')
+    hiddenInput.type = 'file'
+    hiddenInput.accept = '.pdf,application/pdf'
+    hiddenControl.append(hiddenInput)
+    document.body.append(hiddenControl)
     Object.defineProperty(input, 'files', { configurable: true, writable: true, value: null })
     const bytesBase64 = btoa('synthetic-pdf')
     const previous = document.createElement('div')
@@ -428,7 +731,8 @@ describe('BOSS page send adapter', () => {
     document.body.append(previous)
     input.addEventListener('change', () => {
       const receipt = document.createElement('div')
-      receipt.dataset.attachmentId = 'attachment-1'
+      receipt.className = 'attachment-message'
+      receipt.dataset.messageId = 'attachment-message-1'
       receipt.textContent = '岗位专属简历.pdf'
       document.body.append(receipt)
     })
@@ -464,7 +768,7 @@ describe('BOSS page send adapter', () => {
     })
     await expect(response).resolves.toMatchObject({
       resumeReceipt: {
-        platformAttachmentId: 'attachment-1',
+        platformAttachmentId: 'attachment-message-1',
         observedFileName: '岗位专属简历.pdf',
         observedByteLength: 'synthetic-pdf'.length
       }
@@ -472,10 +776,21 @@ describe('BOSS page send adapter', () => {
   })
 
   it('reports selector counts and readiness without returning page text', async () => {
+    const control = document.createElement('label')
+    control.textContent = '上传附件简历'
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = '.pdf,.docx,application/pdf'
-    document.body.append(input)
+    control.append(input)
+    document.body.append(control)
+    const hiddenControl = document.createElement('label')
+    hiddenControl.hidden = true
+    hiddenControl.textContent = '上传附件简历'
+    const hiddenInput = document.createElement('input')
+    hiddenInput.type = 'file'
+    hiddenInput.accept = '.pdf,.docx,application/pdf'
+    hiddenControl.append(hiddenInput)
+    document.body.append(hiddenControl)
     let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
     const chrome = {
       runtime: {
@@ -493,7 +808,7 @@ describe('BOSS page send adapter', () => {
     })
     expect(response.diagnostic).toMatchObject({
       pageKind: 'chat',
-      counts: { editors: 1, sendControls: 1, recipientIdentities: 1, conversationIdentities: 1, recipientNames: 1, docxInputs: 1, pdfInputs: 1 },
+      counts: { editors: 1, sendControls: 1, recipientIdentities: 1, conversationIdentities: 1, recipientNames: 1, docxInputs: 2, pdfInputs: 2 },
       ready: { conversation: true, messageSend: true, resumeUpload: true }
     })
     expect(JSON.stringify(response)).not.toContain('招聘经理')

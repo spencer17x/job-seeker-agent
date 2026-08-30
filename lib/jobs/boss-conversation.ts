@@ -23,6 +23,8 @@ export const BOSS_MESSAGE_STATUSES = [
   'draft', 'awaiting-approval', 'approved', 'sending', 'sent', 'delivered', 'read', 'failed'
 ] as const
 
+export const BOSS_DEFAULT_GREETING = '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？'
+
 export const bossConversationThreadSchema = z.object({
   id: stableIdSchema,
   applicationId: stableIdSchema,
@@ -40,6 +42,9 @@ export const bossConversationThreadSchema = z.object({
   seenPlatformSignalIds: z.array(fingerprintSchema).max(100).default([]),
   outcomeSignal: z.enum(['offer', 'rejection']).optional(),
   resumeReceipt: bossResumeReceiptSchema.optional(),
+  resumeSendAttemptCount: z.number().int().min(0).max(10).default(0),
+  resumeSendFailureCode: z.string().trim().min(1).max(200).optional(),
+  nextResumeRetryAt: timestampSchema.optional(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema
 }).strict().superRefine((thread, context) => {
@@ -88,6 +93,8 @@ export const bossConversationMessageSchema = z.object({
   readAt: timestampSchema.optional(),
   receipt: bossPlatformReceiptSchema.optional(),
   failureCode: z.string().trim().min(1).max(200).optional(),
+  attemptCount: z.number().int().min(0).max(10).default(0),
+  nextRetryAt: timestampSchema.optional(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema
 }).strict().superRefine((message, context) => {
@@ -346,6 +353,41 @@ export function verifyBossConversationRecipient(input: {
   })
 }
 
+export function clearInvalidBossRecipientBinding(input: {
+  thread: BossConversationThread
+  now: string
+}) {
+  if (
+    !input.thread.platformRecipientId?.startsWith('target:')
+    || !input.thread.conversationId?.startsWith('target:')
+    || input.thread.recruitmentStage !== 'outreach-draft'
+    || input.thread.resumeReceipt
+  ) return input.thread
+  return bossConversationThreadSchema.parse({
+    ...input.thread,
+    status: 'draft',
+    recipientName: undefined,
+    recipientTitle: undefined,
+    platformRecipientId: undefined,
+    conversationId: undefined,
+    recipientFingerprint: undefined,
+    recipientVerifiedAt: undefined,
+    updatedAt: input.now
+  })
+}
+
+export function isBossResumeRetryDue(input: {
+  thread: BossConversationThread
+  now: string
+}) {
+  return input.thread.recruitmentStage === 'resume-requested'
+    && input.thread.resumeSendFailureCode === 'BOSS_RESUME_SEND_NOT_VERIFIED'
+    && input.thread.resumeSendAttemptCount > 0
+    && input.thread.resumeSendAttemptCount < 3
+    && Boolean(input.thread.nextResumeRetryAt)
+    && Date.parse(input.thread.nextResumeRetryAt!) <= Date.parse(input.now)
+}
+
 const signalStages: Record<BrowserBossConversationSignal['kind'], BossConversationThread['recruitmentStage']> = {
   'recruiter-reply': 'recruiter-replied',
   'resume-request': 'resume-requested',
@@ -483,6 +525,8 @@ export function reviseBossMessageDraft(input: {
     readAt: undefined,
     receipt: undefined,
     failureCode: undefined,
+    attemptCount: 0,
+    nextRetryAt: undefined,
     updatedAt: input.now
   })
 }
@@ -511,6 +555,7 @@ export function markBossMessageSending(input: {
   return bossConversationMessageSchema.parse({
     ...message,
     status: 'sending',
+    nextRetryAt: undefined,
     updatedAt: input.now
   })
 }
@@ -523,10 +568,39 @@ export function failBossMessage(input: {
   if (!['approved', 'sending'].includes(input.message.status)) {
     throw new TypeError('Only an approved or sending BOSS message can fail')
   }
+  const attemptCount = Math.min(10, input.message.attemptCount + 1)
+  const retryDelayMs = Math.min(6 * 60 * 60 * 1_000, 5 * 60 * 1_000 * (2 ** Math.max(0, attemptCount - 1)))
   return bossConversationMessageSchema.parse({
     ...input.message,
     status: 'failed',
     failureCode: input.failureCode,
+    attemptCount,
+    nextRetryAt: new Date(Date.parse(input.now) + retryDelayMs).toISOString(),
+    updatedAt: input.now
+  })
+}
+
+export function retryBossMessageDraft(input: {
+  message: BossConversationMessage
+  now: string
+  maximumAttempts?: number
+}) {
+  const maximumAttempts = input.maximumAttempts ?? 3
+  if (!Number.isInteger(maximumAttempts) || maximumAttempts < 1 || maximumAttempts > 10) {
+    throw new TypeError('BOSS retry limit is invalid')
+  }
+  if (
+    input.message.status !== 'failed'
+    || input.message.attemptCount >= maximumAttempts
+    || (input.message.nextRetryAt && Date.parse(input.message.nextRetryAt) > Date.parse(input.now))
+  ) return null
+  return bossConversationMessageSchema.parse({
+    ...input.message,
+    status: 'awaiting-approval',
+    recipientFingerprint: undefined,
+    approvedAt: undefined,
+    failureCode: undefined,
+    nextRetryAt: undefined,
     updatedAt: input.now
   })
 }
@@ -545,6 +619,7 @@ export function recordBossMessageReceipt(input: {
     ...input.message,
     status,
     receipt,
+    nextRetryAt: undefined,
     sentAt: input.message.sentAt ?? receipt.observedAt,
     ...(status === 'delivered' || status === 'read' ? { deliveredAt: input.message.deliveredAt ?? receipt.observedAt } : {}),
     ...(status === 'read' ? { readAt: receipt.observedAt } : {}),
@@ -655,20 +730,37 @@ export async function executeBossResumeAttachment(input: {
     || variant.sourceDraftId !== application.sourceDraftId
   ) throw new TypeError('A related job-specific resume variant is required')
 
-  const receipt = await input.send()
-  const observedRecipient = verifyBossConversationRecipient({
-    thread: input.thread,
-    ...receipt.observedRecipient,
-    now: receipt.observedAt
-  })
-  if (
-    observedRecipient.recipientFingerprint !== input.thread.recipientFingerprint
-    || receipt.conversationId !== input.thread.conversationId
-    || receipt.observedFileName !== input.fileName
-    || receipt.observedByteLength !== input.byteLength
-    || receipt.observedMimeType !== input.mimeType
-    || receipt.contentFingerprint !== input.contentFingerprint
-  ) throw new TypeError('BOSS resume receipt does not match the approved variant artifact')
+  let receipt: BrowserBossResumeReceipt
+  try {
+    receipt = await input.send()
+    const observedRecipient = verifyBossConversationRecipient({
+      thread: input.thread,
+      ...receipt.observedRecipient,
+      now: receipt.observedAt
+    })
+    if (
+      observedRecipient.recipientFingerprint !== input.thread.recipientFingerprint
+      || receipt.conversationId !== input.thread.conversationId
+      || receipt.observedFileName !== input.fileName
+      || receipt.observedByteLength !== input.byteLength
+      || receipt.observedMimeType !== input.mimeType
+      || receipt.contentFingerprint !== input.contentFingerprint
+    ) throw new TypeError('BOSS resume receipt does not match the approved variant artifact')
+  } catch (error) {
+    const resumeSendAttemptCount = Math.min(10, input.thread.resumeSendAttemptCount + 1)
+    const retryDelayMs = Math.min(
+      6 * 60 * 60 * 1_000,
+      5 * 60 * 1_000 * (2 ** Math.max(0, resumeSendAttemptCount - 1))
+    )
+    await input.store.put('bossConversationThreads', bossConversationThreadSchema.parse({
+      ...input.thread,
+      resumeSendAttemptCount,
+      resumeSendFailureCode: 'BOSS_RESUME_SEND_NOT_VERIFIED',
+      nextResumeRetryAt: new Date(Date.parse(input.now()) + retryDelayMs).toISOString(),
+      updatedAt: input.now()
+    }))
+    throw error
+  }
 
   const next = bossConversationThreadSchema.parse({
     ...input.thread,
@@ -683,6 +775,8 @@ export async function executeBossResumeAttachment(input: {
       contentFingerprint: input.contentFingerprint,
       observedAt: receipt.observedAt
     },
+    resumeSendFailureCode: undefined,
+    nextResumeRetryAt: undefined,
     updatedAt: input.now()
   })
   await input.store.put('bossConversationThreads', next)
@@ -733,13 +827,7 @@ export async function ensureBossOpeningDraft(input: {
         return fact ? [fact] : []
       })
       const evidence = supportedFacts[0]
-      const body = posting.locale === 'zh'
-        ? evidence
-          ? `您好，我对贵公司的${posting.title}岗位很感兴趣。我的一项可验证经历是：${evidence.text}。希望有机会进一步沟通。`
-          : `您好，我对贵公司的${posting.title}岗位很感兴趣，希望有机会进一步了解岗位并沟通。`
-        : evidence
-          ? `Hello, I am interested in the ${posting.title} role. One verified part of my background is: ${evidence.text}. I would welcome a conversation.`
-          : `Hello, I am interested in the ${posting.title} role and would welcome an opportunity to learn more.`
+      const body = BOSS_DEFAULT_GREETING
       const message = createBossMessageDraft({
         threadId: thread.id,
         kind: 'opener',

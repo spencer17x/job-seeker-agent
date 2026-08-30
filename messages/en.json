@@ -672,9 +672,12 @@
       "loadingModule": "Loading backend module…",
       "connected": "BOSS Zhipin connected",
       "disconnected": "Waiting for BOSS Zhipin",
+      "accessRestricted": "BOSS access restricted",
+      "extensionUpdateRequired": "Reload the JobSeeker Agent extension",
       "agentRunning": "Agent is running",
       "agentReady": "Agent is ready",
       "agentPaused": "Agent is paused",
+      "agentSuspended": "Agent is suspended",
       "setupRequired": "Complete job setup first",
       "setupHelp": "The Agent will not run until you save a trusted resume and target-job requirements.",
       "setupAction": "Start setup",
@@ -712,10 +715,12 @@
       "processNow": "Send to Agent now",
       "selectOpportunity": "Select a role to inspect its match details",
       "resumeTasksTitle": "Resume tasks",
-      "resumeTasksHelp": "Review requirements, evidence, and the job-specific resume",
+      "resumeTasksHelp": "The Agent maintains job-specific resume copies, evidence boundaries, and delivery status while the master stays unchanged",
       "activityTitle": "Agent activity",
       "activityHelp": "Track automated search, analysis, resume, and conversation events",
       "activityPosting": "Discovered or updated: {title}",
+      "activityApplication": "Application packet updated: {title}",
+      "activityMessage": "Recruiter conversation updated: {title}",
       "noActivity": "Activity will appear here after the Agent runs.",
       "preferencesTitle": "Job preferences",
       "preferencesHelp": "These conditions control which BOSS roles the Agent searches and ranks.",
@@ -1029,6 +1034,7 @@
       "session": {
         "available": "Signed-in session available",
         "login-required": "Login or verification required",
+        "access-restricted": "Platform access restricted",
         "unknown": "Waiting for browser detection"
       },
       "learning": "Strategy memory",
@@ -1048,7 +1054,8 @@
       "managedQueue": "The Agent is opening the matching job conversation, verifying the recruiter, and sending automatically; no manual approval is needed.",
       "userAttention": {
         "login-required": "Your BOSS session needs login. Complete login and the Agent will continue automatically.",
-        "captcha-required": "BOSS requires a security check. Complete the CAPTCHA and the Agent will continue automatically."
+        "captcha-required": "BOSS requires a security check. Complete the CAPTCHA and the Agent will continue automatically.",
+        "access-restricted": "BOSS has restricted the current access. The Agent stopped platform requests and preserved the queue; it will continue automatically after the session becomes available."
       },
       "emptyTitle": "The Agent has not started a conversation yet",
       "emptyDescription": "{count} roles are preparing resumes and evidence. After validation, the Agent will create outreach and keep following up.",
@@ -1059,7 +1066,7 @@
       "messageRecipient": "Recipient: {name}",
       "messageRecipientPending": "Waiting for browser verification of the BOSS recipient",
       "recruitmentStage": "Recruitment stage: {stage}",
-      "stage": {
+      "recruitmentStages": {
         "outreach-draft": "Preparing outreach",
         "awaiting-reply": "Awaiting reply",
         "recruiter-replied": "Recruiter replied",
@@ -1072,6 +1079,12 @@
         "completed": "Completed"
       },
       "messageEvidence": "Linked career evidence: {count}",
+      "messageRetryAt": "Attempt {count} did not produce a receipt. A safe retry is scheduled after {value, date, short} {value, time, short}.",
+      "messageRetryPending": "Attempt {count} did not produce a receipt and is waiting for a safe retry.",
+      "messageRetryExhausted": "Automatic retries stopped after {count} attempts without a receipt; the audit record is preserved.",
+      "resumeRetryAt": "Resume attempt {count} did not produce an attachment receipt. A retry is scheduled after {value, date, short} {value, time, short}.",
+      "resumeRetryPending": "Resume attempt {count} did not produce an attachment receipt and is waiting for a safe retry.",
+      "resumeRetryExhausted": "Automatic resume retries stopped after {count} attempts without an attachment receipt.",
       "messageRevised": "Conversation draft saved; recipient and body verification must run again.",
       "messageVerifyAndApprove": "Verify recipient and approve",
       "messageApproved": "Verified BOSS recipient {name}; the exact message body is approved.",

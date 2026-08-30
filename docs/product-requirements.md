@@ -244,10 +244,13 @@ unconfirmed ranking inputs. Managed resume creation does not treat them as caree
 or use them to rewrite claims; it advances a no-op change set through the deterministic
 state machine and stores an independent copy of the trusted resume.
 
-Validated applications create a separate BOSS conversation thread and evidence-linked
-opening draft. Approval is bound to the exact recipient and body fingerprint. Any edit
-invalidates approval. `sent`, `delivered`, and `read` states require a platform receipt
-whose recipient and body fingerprints match the approved message. IndexedDB schema v3
+Validated applications create a separate BOSS conversation thread and an exact BOSS
+default-greeting opening draft. When the posting-bound communication control causes BOSS
+to send that greeting, the Agent selects a company/title-unique recruiter row and reconciles
+the exact-body message ID inside the active conversation rather than sending a duplicate.
+Approval is bound to the exact recipient and body fingerprint.
+Any edit invalidates approval. `sent`, `delivered`, and `read` states require a platform
+message ID and receipt whose recipient and body fingerprints match the approved message. IndexedDB schema v3
 adds these thread and message stores without clearing v1 or v2 data.
 
 The local orchestrator watches applied optimization runs. Once every deterministic
@@ -260,6 +263,15 @@ and conversation inspection, recomputes the final body fingerprint, verifies the
 after writing, and clicks only one unique send control. A successful response requires
 one exact-body message node, a platform message ID, and an observed sent/delivered/read
 state. Anything else is stored as `failed`, not `sent`.
+
+Receipt-less message and resume operations use bounded exponential backoff beginning at
+five minutes. Message retries stop after three attempts and remain visible in the audit
+timeline. A completed login or CAPTCHA is detected as a session recovery and wakes the
+pending queue; normal polling does not repeatedly reopen BOSS pages. A visible BOSS 403
+restriction is a distinct session state: the web control plane disables the extension
+schedule, preserves all pending work, and resumes only after a later read-only session
+probe observes a genuinely available BOSS tab. It never refreshes through or attempts to
+bypass the platform restriction.
 
 Continuous background operation requires a later scheduler and encrypted server-side
 workspace. That phase needs an explicit product and privacy decision covering account

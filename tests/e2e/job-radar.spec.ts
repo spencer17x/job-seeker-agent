@@ -208,7 +208,7 @@ test('starts screening and queues matching applications immediately after Agent 
         requestId: request.requestId,
         ok: true,
         ...(request.action === 'detect-platforms'
-          ? { sessions: [{ platform: 'boss', state: 'available' }] }
+          ? { protocolVersion: 11, sessions: [{ platform: 'boss', state: 'available' }] }
           : request.action === 'search-boss-jobs'
             ? { jobs: [{
                 externalId: 'boss-platform-1',
@@ -255,6 +255,10 @@ test('starts screening and queues matching applications immediately after Agent 
   await expect.poll(() => page.evaluate(() => JSON.parse(
     localStorage.getItem('job-seeker-agent:job-agent-preferences:v1') ?? '{}'
   ))).toMatchObject({ version: 2, enabled: true, autonomy: 'autopilot', autoSendResume: true })
+  await setup.getByRole('link', { name: 'Agent activity', exact: true }).click()
+  await expect(page).toHaveURL(/\/en\/jobs\/activity$/u)
+  await expect(setup.getByText('Application packet updated: Platform Engineer')).toBeVisible()
+  await expect(setup.getByText('Recruiter conversation updated: Platform Engineer')).toBeVisible()
 })
 
 test('brings a user-selected platform job into Target Job without fetching the page', async ({ page }, testInfo) => {

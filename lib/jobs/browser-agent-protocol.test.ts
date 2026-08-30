@@ -16,13 +16,32 @@ describe('browser agent protocol', () => {
         requestId: request.requestId,
         ok: true,
         extensionVersion: '0.1.0',
+        protocolVersion: 11,
         sessions: [{ platform: 'boss', state: 'available', tabId: 12 }]
       } }))
     })
 
     await expect(detectBrowserAgentSessions({ window: target as Window, timeoutMs: 50 })).resolves.toMatchObject({
       ok: true,
+      protocolVersion: 11,
       sessions: [{ platform: 'boss', state: 'available' }]
+    })
+  })
+
+  it('accepts an access restriction without treating it as an authenticated session', async () => {
+    const target = new EventTarget()
+    target.addEventListener(BROWSER_AGENT_REQUEST_EVENT, (event) => {
+      const request = (event as CustomEvent<{ requestId: string }>).detail
+      target.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
+        requestId: request.requestId,
+        ok: true,
+        protocolVersion: 11,
+        sessions: [{ platform: 'boss', state: 'access-restricted', tabId: 13 }]
+      } }))
+    })
+
+    await expect(detectBrowserAgentSessions({ window: target as Window, timeoutMs: 50 })).resolves.toMatchObject({
+      sessions: [{ platform: 'boss', state: 'access-restricted' }]
     })
   })
 
@@ -156,14 +175,11 @@ describe('browser agent protocol', () => {
 
   it('opens only an allowlisted BOSS job conversation with a bounded target identity', async () => {
     const target = new EventTarget()
+    let observedPayload: unknown
     target.addEventListener(BROWSER_AGENT_REQUEST_EVENT, (event) => {
-      const request = (event as CustomEvent<{ requestId: string; action: string; payload: { url: string; title: string; company: string } }>).detail
+      const request = (event as CustomEvent<{ requestId: string; action: string; payload: unknown }>).detail
       if (request.action !== 'open-boss-conversation') return
-      expect(request.payload).toEqual({
-        url: 'https://www.zhipin.com/job_detail/abc.html',
-        title: '平台工程师',
-        company: '示例公司'
-      })
+      observedPayload = request.payload
       target.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
         requestId: request.requestId,
         ok: true,
@@ -179,13 +195,21 @@ describe('browser agent protocol', () => {
       url: 'https://www.zhipin.com/job_detail/abc.html#detail',
       title: '平台工程师',
       company: '示例公司',
+      openingBody: '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？',
       timeoutMs: 50
     })).resolves.toMatchObject({ ok: true, recipient: { conversationId: 'conversation-1' } })
+    expect(observedPayload).toEqual({
+      url: 'https://www.zhipin.com/job_detail/abc.html',
+      title: '平台工程师',
+      company: '示例公司',
+      openingBody: '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？'
+    })
     await expect(openBossBrowserConversation({
       window: target as Window,
       url: 'https://evil.example/job_detail/abc.html',
       title: '平台工程师',
-      company: '示例公司'
+      company: '示例公司',
+      openingBody: '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？'
     })).rejects.toThrow()
   })
 

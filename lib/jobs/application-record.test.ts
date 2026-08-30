@@ -7,6 +7,7 @@ import { fingerprintOptimizationInputs } from '@/lib/agent/workflow-persistence'
 import { normalizeResumeData } from '@/lib/resume-model'
 import type { ApplicationRecord } from './job-domain'
 import {
+  BOSS_DEFAULT_GREETING,
   approveBossConversationMessage,
   applyBossConversationSignal,
   executeApprovedBossMessage,
@@ -100,7 +101,7 @@ describe('application records', () => {
     expect(conversationMessage).toMatchObject({
       status: 'awaiting-approval', evidenceFactIds: ['fact-1']
     })
-    expect(conversationMessage.body).toContain('Built reliable systems.')
+    expect(conversationMessage.body).toBe(BOSS_DEFAULT_GREETING)
     const repeated = await prepareReadyBossApplicationPackets({
       store, sourceDraftId: application.sourceDraftId, resume, now: () => later
     })
@@ -199,6 +200,45 @@ describe('application records', () => {
     const prepared = await prepareApplicationPacket({ store, recordId: application.id, resume, now: later })
     expect(prepared.ready).toBe(true)
     expect(prepared.record).toMatchObject({ status: 'ready-to-apply', postingContentHash: 'hash:changed' })
+  })
+
+  it('backs off a resume upload when BOSS does not return a verified attachment receipt', async () => {
+    const { store, application } = await readyHarness()
+    await prepareReadyBossApplicationPackets({
+      store, sourceDraftId: application.sourceDraftId, resume, now: () => later
+    })
+    const [thread] = await store.list('bossConversationThreads')
+    const verified = verifyBossConversationRecipient({
+      thread,
+      platformRecipientId: 'boss-user-1', conversationId: 'conversation-1',
+      recipientName: 'Recruiter', now: later
+    })
+    const resumeRequested = applyBossConversationSignal({
+      thread: { ...verified, status: 'active', recruitmentStage: 'awaiting-reply' },
+      signal: {
+        signalId: 'fnv1a64:resume-failure', conversationId: 'conversation-1',
+        kind: 'resume-request', observedAt: later
+      },
+      now: later
+    })
+    await store.put('bossConversationThreads', resumeRequested)
+    await expect(executeBossResumeAttachment({
+      store,
+      thread: resumeRequested,
+      fileName: 'ada-engineer.pdf',
+      bytesBase64: 'cGRm',
+      byteLength: 3,
+      mimeType: 'application/pdf',
+      contentFingerprint: 'fnv1a64:pdf',
+      now: () => later,
+      send: async () => { throw new TypeError('receipt missing') }
+    })).rejects.toThrow('receipt missing')
+    expect(await store.get('bossConversationThreads', thread.id)).toMatchObject({
+      recruitmentStage: 'resume-requested',
+      resumeSendAttemptCount: 1,
+      resumeSendFailureCode: 'BOSS_RESUME_SEND_NOT_VERIFIED',
+      nextResumeRetryAt: '2026-08-01T09:05:00.000Z'
+    })
   })
 
   it('invalidates packet readiness when reviewed job content actually changes', async () => {

@@ -7,13 +7,17 @@ import { createJobInputFingerprint } from '@/lib/jobs/job-domain'
 import type { JobAgentPreferences } from '@/lib/jobs/job-agent-policy'
 import { canExecuteJobAgentAction } from '@/lib/jobs/job-agent-policy'
 import {
+  BOSS_DEFAULT_GREETING,
   approveBossConversationMessage,
+  clearInvalidBossRecipientBinding,
   ensureBossFollowUpDrafts,
   ensureBossResumeReceiptReplyDraft,
   ensureBossSignalReplyDrafts,
   executeApprovedBossMessage,
   executeBossResumeAttachment,
+  isBossResumeRetryDue,
   reviseBossMessageDraft,
+  retryBossMessageDraft,
   syncBossConversationSignals,
   verifyBossConversationRecipient,
   type BossConversationMessage,
@@ -25,7 +29,8 @@ import {
   inspectBossBrowserConversation,
   openBossBrowserConversation,
   sendBossBrowserMessage,
-  sendBossResumeAttachment
+  sendBossResumeAttachment,
+  type BrowserBossConversationSignal
 } from '@/lib/jobs/browser-agent-protocol'
 
 type ControllerInput = {
@@ -47,6 +52,8 @@ export function useBossConversationController(input: ControllerInput) {
   const [busyMessageId, setBusyMessageId] = useState('')
   const [busyResumeThreadId, setBusyResumeThreadId] = useState('')
   const drainingRef = useRef(false)
+  const signalThreadCursorRef = useRef(0)
+  const autopilotMessageCursorRef = useRef(0)
 
   const hasAutomaticContactCapacity = useCallback(async () => {
     const current = inputRef.current
@@ -120,34 +127,69 @@ export function useBossConversationController(input: ControllerInput) {
         action: 'send-message',
         preferences: current.preferences,
         connectorAuthorized: true
-      })) return false
-      if (!await hasAutomaticContactCapacity()) return false
-      const thread = await current.store.get('bossConversationThreads', message.threadId)
-      if (!thread) return false
+      })) return 'blocked'
+      if (!await hasAutomaticContactCapacity()) return 'blocked'
+      const storedThread = await current.store.get('bossConversationThreads', message.threadId)
+      if (!storedThread) return 'skipped'
+      const thread = clearInvalidBossRecipientBinding({
+        thread: storedThread,
+        now: new Date().toISOString()
+      })
+      const recipientBindingRepaired = thread !== storedThread
+      if (recipientBindingRepaired) await current.store.put('bossConversationThreads', thread)
       const application = await current.store.get('applicationRecords', thread.applicationId)
       const posting = application
         ? await current.store.get('jobPostings', application.postingId)
         : undefined
-      if (!posting) return false
-      let verified = thread
+      if (!posting) return 'skipped'
+      let pendingMessage = await current.store.get('bossConversationMessages', message.id)
+      if (!pendingMessage) return 'skipped'
+      if (recipientBindingRepaired && ['approved', 'failed'].includes(pendingMessage.status)) {
+        pendingMessage = reviseBossMessageDraft({
+          message: pendingMessage,
+          body: pendingMessage.body,
+          now: new Date().toISOString()
+        })
+        await current.store.put('bossConversationMessages', pendingMessage)
+      }
+      if (pendingMessage.status === 'failed') {
+        const retry = retryBossMessageDraft({
+          message: pendingMessage,
+          now: new Date().toISOString()
+        })
+        if (!retry) return 'skipped'
+        pendingMessage = retry
+        await current.store.put('bossConversationMessages', pendingMessage)
+      }
       if (
-        !verified.recipientFingerprint
-        || !verified.platformRecipientId
-        || !verified.conversationId
-        || !verified.recipientName
+        pendingMessage.kind === 'opener'
+        && pendingMessage.status === 'awaiting-approval'
+        && pendingMessage.body !== BOSS_DEFAULT_GREETING
       ) {
+        pendingMessage = reviseBossMessageDraft({
+          message: pendingMessage,
+          body: BOSS_DEFAULT_GREETING,
+          now: new Date().toISOString()
+        })
+        await current.store.put('bossConversationMessages', pendingMessage)
+      }
+      let verified = thread
+      let observedOpeningReceipt
+      {
         const response = await openBossBrowserConversation({
           window,
           url: posting.canonicalUrl,
           title: posting.title,
           company: posting.company,
+          openingBody: BOSS_DEFAULT_GREETING,
           timeoutMs: 20_000
         })
         if (response.attention) {
           current.setNotice(translationsRef.current(`jobAgent.userAttention.${response.attention}`))
-          return false
+          return 'blocked'
         }
-        if (!response.ok || !response.recipient) return false
+        if (!response.ok || !response.recipient) return 'skipped'
+        if (pendingMessage.kind === 'opener') observedOpeningReceipt = response.sendReceipt
         verified = verifyBossConversationRecipient({
           thread,
           ...response.recipient,
@@ -155,8 +197,15 @@ export function useBossConversationController(input: ControllerInput) {
         })
         await current.store.put('bossConversationThreads', verified)
       }
-      const persistedMessage = await current.store.get('bossConversationMessages', message.id)
-      if (!persistedMessage || !['awaiting-approval', 'approved'].includes(persistedMessage.status)) return false
+      if (
+        !verified.recipientFingerprint
+        || !verified.platformRecipientId
+        || !verified.conversationId
+        || !verified.recipientName
+      ) return 'skipped'
+      const persistedMessage = await current.store.get('bossConversationMessages', pendingMessage.id)
+      if (!persistedMessage || !['awaiting-approval', 'approved'].includes(persistedMessage.status)) return 'skipped'
+      if (persistedMessage.kind === 'opener' && !observedOpeningReceipt) return 'skipped'
       const approved = persistedMessage.status === 'approved'
         ? persistedMessage
         : await approveBossConversationMessage({
@@ -165,11 +214,25 @@ export function useBossConversationController(input: ControllerInput) {
             messageId: persistedMessage.id,
             now: new Date().toISOString()
           })
+      if (approved.kind === 'opener') {
+        const persisted = await executeApprovedBossMessage({
+          store: current.store,
+          thread: verified,
+          message: approved,
+          now: () => new Date().toISOString(),
+          send: async () => observedOpeningReceipt!
+        })
+        current.setNotice(translationsRef.current('jobAgent.messageSent', {
+          status: translationsRef.current(`jobAgent.messageStatus.${persisted.status}`)
+        }))
+        await current.reload()
+        return 'handled'
+      }
       await sendApproved(approved.id, approved, verified)
-      return true
+      return 'handled'
     } catch {
       // The draft remains queued when the exact job conversation cannot be verified.
-      return false
+      return 'skipped'
     }
   }, [hasAutomaticContactCapacity, sendApproved])
 
@@ -182,13 +245,34 @@ export function useBossConversationController(input: ControllerInput) {
     ) return
     drainingRef.current = true
     try {
-      const messages = (await current.store.list('bossConversationMessages'))
-        .filter((message) => ['awaiting-approval', 'approved'].includes(message.status))
+      const now = Date.now()
+      const eligibleMessages = (await current.store.list('bossConversationMessages'))
+        .filter((message) => (
+          ['awaiting-approval', 'approved'].includes(message.status)
+          || (
+            message.status === 'failed'
+            && message.attemptCount < 3
+            && (!message.nextRetryAt || Date.parse(message.nextRetryAt) <= now)
+          )
+        ))
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+      const start = eligibleMessages.length > 0
+        ? autopilotMessageCursorRef.current % eligibleMessages.length
+        : 0
+      const messages = Array.from(
+        { length: Math.min(5, eligibleMessages.length) },
+        (_, index) => eligibleMessages[(start + index) % eligibleMessages.length]
+      )
+      let advanced = 0
       for (const message of messages) {
         if (!inputRef.current.preferences.enabled) break
         if (!await hasAutomaticContactCapacity()) break
-        if (!await tryAutopilotMessage(message)) break
+        const result = await tryAutopilotMessage(message)
+        advanced += 1
+        if (result === 'blocked') break
+      }
+      if (eligibleMessages.length > 0 && advanced > 0) {
+        autopilotMessageCursorRef.current = (start + advanced) % eligibleMessages.length
       }
     } finally {
       drainingRef.current = false
@@ -198,6 +282,10 @@ export function useBossConversationController(input: ControllerInput) {
   const sendRequestedResume = useCallback(async (thread: BossConversationThread) => {
     const current = inputRef.current
     const t = translationsRef.current
+    if (
+      thread.resumeSendAttemptCount >= 3
+      || (thread.nextResumeRetryAt && Date.parse(thread.nextResumeRetryAt) > Date.now())
+    ) return
     if (
       !thread.recipientFingerprint
       || !thread.platformRecipientId
@@ -221,14 +309,16 @@ export function useBossConversationController(input: ControllerInput) {
       let chatDiagnostic = diagnosticResponse.diagnostics?.find((item) => (
         item.pageKind === 'chat'
         && item.ready.conversation
+        && item.ready.resumeUpload
         && item.conversationFingerprint === conversationFingerprint
       ))
-      if (chatDiagnostic?.counts.pdfInputs !== 1) {
+      if (!chatDiagnostic) {
         const opened = await openBossBrowserConversation({
           window,
           url: posting.canonicalUrl,
           title: posting.title,
           company: posting.company,
+          openingBody: BOSS_DEFAULT_GREETING,
           timeoutMs: 20_000
         })
         if (opened.attention) {
@@ -246,9 +336,10 @@ export function useBossConversationController(input: ControllerInput) {
         chatDiagnostic = diagnosticResponse.diagnostics?.find((item) => (
           item.pageKind === 'chat'
           && item.ready.conversation
+          && item.ready.resumeUpload
           && item.conversationFingerprint === createJobInputFingerprint(verifiedThread.conversationId!)
         ))
-        if (chatDiagnostic?.counts.pdfInputs !== 1) {
+        if (!chatDiagnostic) {
           throw new TypeError('No unique BOSS PDF resume input is available')
         }
       }
@@ -303,11 +394,79 @@ export function useBossConversationController(input: ControllerInput) {
     }
   }, [tryAutopilotMessage])
 
+  const collectKnownThreadSignals = useCallback(async () => {
+    const current = inputRef.current
+    const collected = new Map<string, BrowserBossConversationSignal>()
+    let blocked = false
+    const currentResponse = await collectBossConversationSignals({ window })
+    for (const signal of currentResponse.conversationSignals ?? []) collected.set(signal.signalId, signal)
+
+    const eligibleThreads = current.threads.filter((thread) => (
+      thread.status !== 'closed'
+      && Boolean(thread.recipientFingerprint)
+      && Boolean(thread.platformRecipientId)
+      && Boolean(thread.conversationId)
+      && Boolean(thread.recipientName)
+    )).sort((left, right) => left.id.localeCompare(right.id))
+    const start = eligibleThreads.length > 0
+      ? signalThreadCursorRef.current % eligibleThreads.length
+      : 0
+    const knownThreads = Array.from(
+      { length: Math.min(5, eligibleThreads.length) },
+      (_, index) => eligibleThreads[(start + index) % eligibleThreads.length]
+    )
+    let advanced = 0
+    for (const thread of knownThreads) {
+      if (!inputRef.current.preferences.enabled) break
+      const application = await current.store.get('applicationRecords', thread.applicationId)
+      const posting = application
+        ? await current.store.get('jobPostings', application.postingId)
+        : undefined
+      if (!posting) {
+        advanced += 1
+        continue
+      }
+      const opened = await openBossBrowserConversation({
+        window,
+        url: posting.canonicalUrl,
+        title: posting.title,
+        company: posting.company,
+        openingBody: BOSS_DEFAULT_GREETING,
+        timeoutMs: 20_000
+      })
+      if (opened.attention) {
+        current.setNotice(translationsRef.current(`jobAgent.userAttention.${opened.attention}`))
+        advanced += 1
+        blocked = true
+        break
+      }
+      advanced += 1
+      if (!opened.ok || !opened.recipient) continue
+      try {
+        verifyBossConversationRecipient({
+          thread,
+          ...opened.recipient,
+          now: new Date().toISOString()
+        })
+      } catch {
+        continue
+      }
+      const response = await collectBossConversationSignals({ window })
+      for (const signal of response.conversationSignals ?? []) {
+        if (signal.conversationId === thread.conversationId) collected.set(signal.signalId, signal)
+      }
+    }
+    if (eligibleThreads.length > 0 && advanced > 0) {
+      signalThreadCursorRef.current = (start + advanced) % eligibleThreads.length
+    }
+    return { signals: [...collected.values()], blocked }
+  }, [])
+
   const syncSignals = useCallback(async () => {
     const current = inputRef.current
-    const response = await collectBossConversationSignals({ window })
     const now = new Date().toISOString()
-    const signals = response.ok ? response.conversationSignals ?? [] : []
+    const { signals, blocked } = await collectKnownThreadSignals()
+    if (blocked) return 'blocked' as const
     const updated = signals.length > 0
       ? await syncBossConversationSignals({ store: current.store, signals, now })
       : []
@@ -315,16 +474,28 @@ export function useBossConversationController(input: ControllerInput) {
       ? await ensureBossSignalReplyDrafts({ store: current.store, signals, now })
       : []
     const followUps = await ensureBossFollowUpDrafts({ store: current.store, now })
-    if (updated.length === 0 && signalDrafts.length === 0 && followUps.length === 0) return
+    const dueResumeRetries = (await current.store.list('bossConversationThreads'))
+      .filter((thread) => isBossResumeRetryDue({ thread, now }))
+    const resumeThreads = [...new Map([
+      ...updated.filter((thread) => thread.recruitmentStage === 'resume-requested'),
+      ...dueResumeRetries
+    ].map((thread) => [thread.id, thread])).values()]
+    if (
+      updated.length === 0
+      && signalDrafts.length === 0
+      && followUps.length === 0
+      && resumeThreads.length === 0
+    ) return 'completed' as const
     await current.reload()
-    if (current.preferences.autonomy !== 'autopilot') return
-    for (const thread of updated.filter((item) => item.recruitmentStage === 'resume-requested')) {
+    if (current.preferences.autonomy !== 'autopilot') return 'completed' as const
+    for (const thread of resumeThreads) {
       if (current.preferences.autoSendResume && await hasAutomaticContactCapacity()) {
         await sendRequestedResume(thread)
       }
     }
     for (const message of [...signalDrafts, ...followUps]) await tryAutopilotMessage(message)
-  }, [hasAutomaticContactCapacity, sendRequestedResume, tryAutopilotMessage])
+    return 'completed' as const
+  }, [collectKnownThreadSignals, hasAutomaticContactCapacity, sendRequestedResume, tryAutopilotMessage])
 
   const revise = useCallback(async (messageId: string, body: string) => {
     const current = inputRef.current

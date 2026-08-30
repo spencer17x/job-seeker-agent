@@ -672,9 +672,12 @@
       "loadingModule": "正在加载后台模块…",
       "connected": "BOSS 直聘已连接",
       "disconnected": "等待连接 BOSS 直聘",
+      "accessRestricted": "BOSS 访问受限",
+      "extensionUpdateRequired": "请重新加载 JobSeeker Agent 扩展",
       "agentRunning": "Agent 正在运行",
       "agentReady": "Agent 已准备好",
       "agentPaused": "Agent 已暂停",
+      "agentSuspended": "Agent 已挂起",
       "setupRequired": "请先完成求职设置",
       "setupHelp": "Agent 不会在你保存可信简历和目标岗位要求前运行。",
       "setupAction": "开始设置",
@@ -712,10 +715,12 @@
       "processNow": "立即交给 Agent 处理",
       "selectOpportunity": "选择一个岗位查看匹配详情",
       "resumeTasksTitle": "简历任务",
-      "resumeTasksHelp": "逐个确认岗位要求、证据和岗位专属简历",
+      "resumeTasksHelp": "Agent 自动维护岗位专属简历副本、证据边界和发送状态，主简历保持不变",
       "activityTitle": "Agent 动态",
       "activityHelp": "查看自动搜索、分析、简历和沟通记录",
       "activityPosting": "发现并更新：{title}",
+      "activityApplication": "投递包状态更新：{title}",
+      "activityMessage": "招聘方沟通状态更新：{title}",
       "noActivity": "Agent 运行后，动态会显示在这里。",
       "preferencesTitle": "求职偏好",
       "preferencesHelp": "这些条件决定 Agent 搜索和排序哪些 BOSS 岗位。",
@@ -1029,6 +1034,7 @@
       "session": {
         "available": "登录会话可用",
         "login-required": "需要登录或验证",
+        "access-restricted": "平台访问受限",
         "unknown": "等待浏览器检测"
       },
       "learning": "策略记忆",
@@ -1048,7 +1054,8 @@
       "managedQueue": "Agent 正在自动打开对应岗位会话、验证招聘方并发送，无需手动批准。",
       "userAttention": {
         "login-required": "BOSS 登录已失效，请完成登录后 Agent 会自动继续。",
-        "captcha-required": "BOSS 要求安全验证，请完成验证码后 Agent 会自动继续。"
+        "captcha-required": "BOSS 要求安全验证，请完成验证码后 Agent 会自动继续。",
+        "access-restricted": "BOSS 已限制当前访问。Agent 已停止平台请求并保留队列；请等待限制解除，检测到会话恢复后会自动继续。"
       },
       "emptyTitle": "Agent 尚未开始沟通",
       "emptyDescription": "当前有 {count} 个岗位正在准备简历和证据；通过校验后，Agent 会自动创建沟通并持续跟进。",
@@ -1059,7 +1066,7 @@
       "messageRecipient": "收件人：{name}",
       "messageRecipientPending": "等待浏览器验证 BOSS 收件人",
       "recruitmentStage": "招聘阶段：{stage}",
-      "stage": {
+      "recruitmentStages": {
         "outreach-draft": "准备首次沟通",
         "awaiting-reply": "等待回复",
         "recruiter-replied": "招聘方已回复",
@@ -1072,6 +1079,12 @@
         "completed": "流程已结束"
       },
       "messageEvidence": "关联职业证据 {count} 条",
+      "messageRetryAt": "第 {count} 次发送未取得回执，将在 {value, date, short} {value, time, short} 后重试。",
+      "messageRetryPending": "第 {count} 次发送未取得回执，等待安全重试。",
+      "messageRetryExhausted": "连续 {count} 次未取得回执，已停止自动重试并保留审计记录。",
+      "resumeRetryAt": "第 {count} 次简历发送未取得附件回执，将在 {value, date, short} {value, time, short} 后重试。",
+      "resumeRetryPending": "第 {count} 次简历发送未取得附件回执，等待安全重试。",
+      "resumeRetryExhausted": "连续 {count} 次未取得简历附件回执，已停止自动重试。",
       "messageRevised": "沟通草稿已保存，需要重新验证收件人与正文。",
       "messageVerifyAndApprove": "验证收件人并批准",
       "messageApproved": "已验证 BOSS 收件人 {name}，消息正文已批准。",

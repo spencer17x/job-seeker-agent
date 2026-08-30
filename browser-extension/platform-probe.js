@@ -19,6 +19,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse(openBossConversation(message.payload))
     return false
   }
+  if (message?.action === 'select-boss-conversation') {
+    selectBossConversation(message.payload).then((result) => sendResponse(result))
+      .catch(() => sendResponse({ recipient: null, sendReceipt: null }))
+    return true
+  }
   if (message?.action === 'inspect-boss-conversation') {
     sendResponse({ recipient: inspectBossConversation() })
     return false
@@ -32,7 +37,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false
   }
   if (message?.action === 'diagnose-boss-adapter') {
-    sendResponse({ diagnostic: diagnoseBossAdapter() })
+    const diagnostic = diagnoseBossAdapter()
+    console.debug('[JobSeeker Agent] BOSS adapter diagnostic', JSON.stringify({
+      pageKind: diagnostic.pageKind,
+      sessionState: diagnostic.sessionState,
+      defaultGreetingRows: diagnostic.counts.defaultGreetingRows,
+      defaultGreetingRowsWithMessageIds: diagnostic.counts.defaultGreetingRowsWithMessageIds,
+      editors: diagnostic.counts.editors,
+      sendControls: diagnostic.counts.sendControls,
+      pdfInputs: diagnostic.counts.pdfInputs
+    }))
+    sendResponse({ diagnostic })
     return false
   }
   if (message?.action === 'send-boss-message') {
@@ -50,22 +65,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 chrome.runtime.sendMessage({ action: 'boss-frame-ready' }).catch(() => undefined)
 
+const BOSS_DEFAULT_GREETING = '刚刚看了您发布的这个职位，我特别喜欢，可否聊聊呢？'
+let selectedConversationTarget = null
+
 function inspectBossConversation() {
   return conversationContext()?.recipient ?? null
 }
 
 function openBossConversation(payload) {
-  const page = bossJobDetailPage(payload?.url)
   const title = typeof payload?.title === 'string' ? payload.title.normalize('NFKC').trim() : ''
   const company = typeof payload?.company === 'string' ? payload.company.normalize('NFKC').trim() : ''
-  if (!page || !title || title.length > 300 || !company || company.length > 300) return { opened: false }
+  if (!title || title.length > 300 || !company || company.length > 300) return { opened: false }
+  const attention = detectUserAttention()
+  if (attention) return { opened: false, attention }
+  const page = bossJobDetailPage(payload?.url)
+  if (!page) return { opened: false }
   const bodyText = document.body?.innerText?.normalize('NFKC').slice(0, 100_000) ?? ''
-  if (/(安全验证|验证码|完成验证|滑块验证|请先验证)/u.test(bodyText)) {
-    return { opened: false, attention: 'captcha-required' }
-  }
-  if (detectSessionState() === 'login-required') {
-    return { opened: false, attention: 'login-required' }
-  }
   const comparable = (value) => value.toLocaleLowerCase().replace(/[\s·•|｜,，。:：()（）\[\]【】_-]+/gu, '')
   const visibleIdentity = comparable(bodyText)
   // The canonical job-detail URL plus exact visible title identify the target.
@@ -78,8 +93,361 @@ function openBossConversation(payload) {
     ['立即沟通', '继续沟通', '打招呼'].includes(element.textContent?.replace(/\s+/gu, '').trim() ?? '')
   ))
   if (controls.length !== 1) return { opened: false }
+  const recruiterHint = jobDetailRecruiterHint()
   controls[0].click()
-  return { opened: true }
+  return { opened: true, ...(recruiterHint ? { recruiterHint } : {}) }
+}
+
+function jobDetailRecruiterHint() {
+  const headings = visibleMatches('h2, h3, h4, strong', (element) => (
+    /^[\p{Script=Han}A-Za-z·]{1,20}(?:先生|女士)$/u.test(normalizeVisibleText(element.textContent ?? ''))
+  ))
+  if (headings.length !== 1) return null
+  const recruiterName = normalizeVisibleText(headings[0].textContent ?? '')
+  let current = headings[0].parentElement
+  for (let depth = 0; current && depth < 4; depth += 1, current = current.parentElement) {
+    const text = normalizeVisibleText(current.textContent ?? '')
+    if (text.length > 300) break
+    const labels = [...current.querySelectorAll('*')].flatMap((element) => {
+      if (element.children.length > 0) return []
+      const value = normalizeVisibleText(element.textContent ?? '')
+      return value && value !== recruiterName && value !== '·' ? [value] : []
+    }).filter((value, index, values) => values.indexOf(value) === index)
+    if (labels.length > 0) {
+      return {
+        recruiterName: recruiterName.slice(0, 300),
+        recruiterCompany: labels[0].slice(0, 300)
+      }
+    }
+  }
+  return { recruiterName: recruiterName.slice(0, 300) }
+}
+
+async function selectBossConversation(payload) {
+  const target = parseConversationTarget(payload)
+  if (!target) {
+    return { recipient: null, sendReceipt: null }
+  }
+  const activeContext = conversationContext()
+  if (activeContext && activeConversationMatchesTarget(activeContext, target)) {
+    const sendReceipt = openingReceiptFromActiveConversation(target.openingBody, activeContext.recipient, activeContext.root)
+    if (sendReceipt) return { recipient: activeContext.recipient, sendReceipt }
+  }
+  const previewNodes = [...document.querySelectorAll('body *')].filter((element) => {
+    if (element.children.length > 0 || !isVisible(element)) return false
+    return normalizeVisibleText(element.textContent ?? '') === normalizeVisibleText(target.openingBody)
+  })
+  const candidates = [...new Set(previewNodes.flatMap((preview) => {
+    const row = conversationRowForPreview(preview)
+    return row ? [row] : []
+  }))].filter(isVisible).sort((left, right) => (
+    left.getBoundingClientRect().top - right.getBoundingClientRect().top
+  ))
+  const comparable = (value) => normalizeVisibleText(value)
+    .toLocaleLowerCase()
+    .replace(/[\s·•|｜,，。:：()（）\[\]【】_-]+/gu, '')
+  const titleMatches = candidates.filter((row) => (
+    comparable(row.textContent ?? '').includes(comparable(target.title))
+  ))
+  const companyMatches = candidates.filter((row) => (
+    comparable(row.textContent ?? '').includes(comparable(target.company))
+  ))
+  const companyNodes = [...document.querySelectorAll('body *')].filter((element) => (
+    element.children.length === 0
+    && isVisible(element)
+    && comparable(element.textContent ?? '').includes(comparable(target.company))
+  ))
+  const companyRows = [...new Set(companyNodes.flatMap((element) => {
+    const row = conversationRowForElement(element)
+    return row ? [row] : []
+  }))].filter(isVisible)
+  const rowsForIdentity = (value) => {
+    if (!value) return []
+    const nodes = [...document.querySelectorAll('body *')].filter((element) => (
+      element.children.length === 0
+      && isVisible(element)
+      && comparable(element.textContent ?? '').includes(comparable(value))
+    ))
+    return [...new Set(nodes.flatMap((element) => {
+      const row = conversationRowForElement(element)
+      return row ? [row] : []
+    }))].filter(isVisible)
+  }
+  const recruiterRows = rowsForIdentity(target.recruiterName)
+  const recruiterCompanyRows = rowsForIdentity(target.recruiterCompany)
+  const eligible = recruiterRows.length === 1
+    ? recruiterRows
+    : recruiterCompanyRows.length === 1
+      ? recruiterCompanyRows
+      : companyMatches.length === 1
+        ? companyMatches
+        : companyRows.length === 1
+          ? companyRows
+          : titleMatches.length === 1
+            ? titleMatches
+            : candidates
+  // A shared default greeting is not a target identity. When BOSS exposes
+  // multiple indistinguishable rows, fail closed instead of binding the newest
+  // unrelated recruiter to the current posting.
+  if (eligible.length !== 1) {
+    const inspected = []
+    for (const row of candidates.slice(0, 20)) {
+      if (!row.isConnected) continue
+      const recipient = recipientFromConversationRow(row, target)
+      if (!recipient) continue
+      selectedConversationTarget = { target, recipient }
+      row.click()
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      const context = conversationContext()
+      if (!context || !activeConversationMatchesTarget(context, target)) continue
+      const provisionalRowIdentity = recipient.platformRecipientId.startsWith('target:')
+        && recipient.conversationId.startsWith('target:')
+      const stableIdentityMatches = context.recipient.platformRecipientId === recipient.platformRecipientId
+        && context.recipient.conversationId === recipient.conversationId
+      if (
+        (!provisionalRowIdentity && !stableIdentityMatches)
+        || !recipientNamesMatch({
+          rowName: recipient.recipientName,
+          contextName: context.recipient.recipientName,
+          company: target.recruiterCompany ?? target.company,
+          allowUnknownCompanySuffix: true
+        })
+      ) continue
+      const sendReceipt = openingReceiptFromConversationRow(row, target.openingBody, context.recipient)
+        ?? openingReceiptFromActiveConversation(target.openingBody, context.recipient, context.root)
+      inspected.push({ recipient: context.recipient, sendReceipt })
+    }
+    return inspected.length === 1 ? inspected[0] : { recipient: null, sendReceipt: null }
+  }
+
+  const row = eligible[0]
+  const recipient = recipientFromConversationRow(row, target)
+  if (!recipient) return { recipient: null, sendReceipt: null }
+  selectedConversationTarget = { target, recipient }
+  row.click()
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  const context = conversationContext()
+  let verifiedRecipient = recipient
+  if (context?.recipient) {
+    const provisionalRowIdentity = recipient.platformRecipientId.startsWith('target:')
+      && recipient.conversationId.startsWith('target:')
+    const stableIdentityMatches = context.recipient.platformRecipientId === recipient.platformRecipientId
+      && context.recipient.conversationId === recipient.conversationId
+    if (
+      (!provisionalRowIdentity && !stableIdentityMatches)
+      || !recipientNamesMatch({
+        rowName: recipient.recipientName,
+        contextName: context.recipient.recipientName,
+        company: target.recruiterCompany ?? target.company
+      })
+    ) return { recipient: null, sendReceipt: null }
+    verifiedRecipient = context.recipient
+  }
+
+  const sendReceipt = openingReceiptFromConversationRow(row, target.openingBody, verifiedRecipient)
+    ?? openingReceiptFromActiveConversation(target.openingBody, verifiedRecipient, context?.root)
+  return { recipient: verifiedRecipient, sendReceipt }
+}
+
+function activeConversationMatchesTarget(context, target) {
+  const comparable = (value) => normalizeVisibleText(value)
+    .toLocaleLowerCase()
+    .replace(/[\s·•|｜,，。:：()（）\[\]【】_-]+/gu, '')
+  return comparable(context.root.textContent ?? '').includes(comparable(target.title))
+}
+
+function recipientNamesMatch({ rowName, contextName, company, allowUnknownCompanySuffix = false }) {
+  const comparable = (value) => normalizeVisibleText(value)
+    .toLocaleLowerCase()
+    .replace(/[\s·•|｜,，。:：()（）\[\]【】_-]+/gu, '')
+  const row = comparable(rowName)
+  const context = comparable(contextName)
+  const targetCompany = comparable(company)
+  if (!row || !context) return false
+  if (row === context) return true
+  if (row === `${context}${targetCompany}` || context === `${row}${targetCompany}`) return true
+  return allowUnknownCompanySuffix && (row.startsWith(context) || context.startsWith(row))
+}
+
+function parseConversationTarget(payload) {
+  const page = bossJobDetailPage(payload?.url)
+  const title = typeof payload?.title === 'string' ? payload.title.normalize('NFKC').trim() : ''
+  const company = typeof payload?.company === 'string' ? payload.company.normalize('NFKC').trim() : ''
+  const openingBody = typeof payload?.openingBody === 'string' ? payload.openingBody.trim() : ''
+  const recruiterName = typeof payload?.recruiterName === 'string' ? payload.recruiterName.normalize('NFKC').trim() : ''
+  const recruiterCompany = typeof payload?.recruiterCompany === 'string' ? payload.recruiterCompany.normalize('NFKC').trim() : ''
+  if (
+    !page
+    || !title || title.length > 300
+    || !company || company.length > 300
+    || normalizeVisibleText(openingBody) !== normalizeVisibleText(BOSS_DEFAULT_GREETING)
+  ) return null
+  return {
+    ...page, title, company, openingBody,
+    ...(recruiterName && recruiterName.length <= 300 ? { recruiterName } : {}),
+    ...(recruiterCompany && recruiterCompany.length <= 300 ? { recruiterCompany } : {})
+  }
+}
+
+function conversationRowForPreview(preview) {
+  return conversationRowForElement(preview, true)
+}
+
+function conversationRowForElement(element, requireDefaultGreeting = false) {
+  let current = element
+  for (let depth = 0; current && depth < 7; depth += 1, current = current.parentElement) {
+    if (!isVisible(current)) continue
+    const text = normalizeVisibleText(current.textContent ?? '')
+    if (
+      (!requireDefaultGreeting || text.includes(normalizeVisibleText(BOSS_DEFAULT_GREETING)))
+      && text.length > 0
+      && text.length <= 1_200
+      && (
+        current.matches('li, [role="option"], [role="listitem"]')
+        || /(?:chat|conversation|contact|friend|user).*(?:item|row)|(?:item|row).*(?:chat|conversation|contact|friend|user)/iu.test(String(current.className))
+      )
+    ) return current
+  }
+  return null
+}
+
+function recipientFromConversationRow(row, target) {
+  const labels = [...row.querySelectorAll('*')].flatMap((element) => {
+    if (element.children.length > 0) return []
+    const text = normalizeVisibleText(element.textContent ?? '')
+    if (
+      !text
+      || text === normalizeVisibleText(target.openingBody)
+      || /^\d{1,2}:\d{2}$/u.test(text)
+      || /^(?:今天|昨天|前天|刚刚|星期[一二三四五六日天]|周[一二三四五六日天]|\d{1,2}月\d{1,2}日|\d+\s*(?:分钟前|小时前|天前))$/u.test(text)
+      || /^\[(?:送达|已读|发送)\]$/u.test(text)
+    ) return []
+    return [text]
+  }).filter((value, index, values) => values.indexOf(value) === index)
+  const recipientName = labels[0]?.slice(0, 300)
+  if (!recipientName) return null
+  const recipientTitle = labels[1]?.slice(0, 300)
+  const platformRecipientId = firstBoundedAttribute(row, [
+    'data-boss-id', 'data-uid', 'data-recruiter-id', 'data-geek-id'
+  ]) ?? `target:${fingerprint({ externalId: target.externalId, recipientName })}`
+  const conversationId = firstBoundedAttribute(row, [
+    'data-conversation-id', 'data-lid', 'data-chat-id', 'data-id'
+  ]) ?? `target:${fingerprint({ externalId: target.externalId, recipientName, recipientTitle })}`
+  return {
+    platformRecipientId,
+    conversationId,
+    recipientName,
+    ...(recipientTitle ? { recipientTitle } : {})
+  }
+}
+
+function openingReceiptFromConversationRow(row, body, recipient) {
+  const statusText = normalizeVisibleText(row.textContent ?? '')
+  const observedStatus = /已读/u.test(statusText)
+    ? 'read'
+    : /送达/u.test(statusText)
+      ? 'delivered'
+      : /发送|已发/u.test(statusText)
+        ? 'sent'
+        : null
+  const platformMessageId = firstBoundedAttribute(row, [
+    'data-message-id', 'data-msg-id', 'data-last-message-id', 'data-id'
+  ])
+  if (!observedStatus || !platformMessageId) return null
+  return {
+    platformMessageId,
+    conversationId: recipient.conversationId,
+    observedBody: body,
+    observedStatus,
+    observedRecipient: recipient,
+    observedAt: new Date().toISOString()
+  }
+}
+
+function openingReceiptFromActiveConversation(body, recipient, root = document.body) {
+  const receipts = messageReceiptCandidates(body)
+    .filter(({ node }) => root === node || root.contains(node))
+  if (receipts.length === 1) {
+    const { id: platformMessageId, node } = receipts[0]
+    const statusText = normalizeVisibleText(node.textContent ?? '')
+    const observedStatus = observedMessageStatus(statusText)
+    if (observedStatus) {
+      return {
+        platformMessageId,
+        conversationId: recipient.conversationId,
+        observedBody: body,
+        observedStatus,
+        observedRecipient: recipient,
+        observedAt: new Date().toISOString()
+      }
+    }
+  }
+  const visibleReceipts = visibleMessageReceiptCandidates(body, recipient, root)
+  return visibleReceipts.length === 1 ? visibleReceipts[0] : null
+}
+
+function visibleMessageReceiptCandidates(body, recipient, root) {
+  const exactBody = normalizeVisibleText(body)
+  const leaves = [root, ...root.querySelectorAll('*')].filter((element) => (
+    element.children.length === 0
+    && isVisible(element)
+    && normalizeVisibleText(element.textContent ?? '') === exactBody
+  ))
+  const receipts = leaves.flatMap((leaf) => {
+    let current = leaf.parentElement
+    for (let depth = 0; current && root.contains(current) && depth < 7; depth += 1, current = current.parentElement) {
+      const statusText = normalizeVisibleText(current.textContent ?? '')
+      if (statusText.length > 5_000) break
+      const observedStatus = observedMessageStatus(statusText)
+      if (!observedStatus) continue
+      return [{
+        platformMessageId: `visible:${fingerprint({
+          conversationId: recipient.conversationId,
+          body: exactBody,
+          observedStatus,
+          statusText: statusText.slice(0, 500)
+        })}`,
+        conversationId: recipient.conversationId,
+        observedBody: body,
+        observedStatus,
+        observedRecipient: recipient,
+        observedAt: new Date().toISOString()
+      }]
+    }
+    return []
+  })
+  return [...new Map(receipts.map((receipt) => [receipt.platformMessageId, receipt])).values()]
+}
+
+function observedMessageStatus(statusText) {
+  const observedStatus = /已读/u.test(statusText)
+    ? 'read'
+    : /送达/u.test(statusText)
+      ? 'delivered'
+      : /发送|已发/u.test(statusText)
+        ? 'sent'
+        : null
+  return observedStatus
+}
+
+function firstBoundedAttribute(root, names) {
+  for (const element of [root, ...root.querySelectorAll('*')]) {
+    for (const name of names) {
+      const value = element.getAttribute(name)?.trim()
+      if (value && value.length <= 500) return value
+    }
+  }
+  return null
+}
+
+function normalizeVisibleText(value) {
+  return value.normalize('NFKC').replace(/\s+/gu, ' ').trim()
+}
+
+function isVisible(element) {
+  const rect = element.getBoundingClientRect()
+  return rect.width > 0 && rect.height > 0
 }
 
 function diagnoseBossAdapter() {
@@ -92,6 +460,7 @@ function diagnoseBossAdapter() {
   const explicitRecipientIdentities = visibleMatches('[data-boss-id], [data-uid], [data-recruiter-id], [data-geek-id]').length
   const explicitConversationIdentities = visibleMatches('[data-conversation-id], [data-lid], [data-chat-id]').length
   const explicitRecipientNames = visibleMatches('[class*="chat-name"], [class*="boss-name"], [class*="recipient-name"]').length
+  const defaultGreetingRows = defaultGreetingConversationRows()
   const counts = {
     jobLinks: document.querySelectorAll('a[href*="/job_detail/"]').length,
     editors: visibleMatches('[contenteditable="true"], textarea[placeholder*="消息"], textarea[placeholder*="沟通"]').length,
@@ -109,14 +478,16 @@ function diagnoseBossAdapter() {
     }).length,
     messageReceipts: document.querySelectorAll('[data-message-id], [data-msg-id]').length,
     attachmentReceipts: document.querySelectorAll('[data-attachment-id], [data-file-id]').length,
-    incomingMessages: document.querySelectorAll('[data-direction="incoming"], [class*="message-left"], [class*="item-friend"], [class*="message-other"]').length
+    incomingMessages: document.querySelectorAll('[data-direction="incoming"], [class*="message-left"], [class*="item-friend"], [class*="message-other"]').length,
+    defaultGreetingRows: defaultGreetingRows.length,
+    defaultGreetingRowsWithMessageIds: defaultGreetingRows.filter((row) => Boolean(firstBoundedAttribute(row, [
+      'data-message-id', 'data-msg-id', 'data-last-message-id', 'data-id'
+    ]))).length
   }
-  const conversation = counts.editors === 1
-    && counts.sendControls === 1
-    && explicitRecipientIdentities === 1
-    && explicitConversationIdentities === 1
-    && explicitRecipientNames === 1
-  const context = conversation ? conversationContext() : null
+  const context = counts.editors === 1 && counts.sendControls === 1
+    ? conversationContext()
+    : null
+  const conversation = Boolean(context)
   return {
     pageKind,
     ...(context ? { conversationFingerprint: fingerprint(context.recipient.conversationId) } : {}),
@@ -126,9 +497,21 @@ function diagnoseBossAdapter() {
       discovery: pageKind === 'search' && counts.jobLinks > 0,
       conversation,
       messageSend: conversation,
-      resumeUpload: conversation && counts.pdfInputs === 1
+      resumeUpload: conversation && Boolean(uniqueResumeFileInput('application/pdf'))
     }
   }
+}
+
+function defaultGreetingConversationRows() {
+  const previews = [...document.querySelectorAll('body *')].filter((element) => (
+    element.children.length === 0
+    && isVisible(element)
+    && normalizeVisibleText(element.textContent ?? '') === normalizeVisibleText(BOSS_DEFAULT_GREETING)
+  ))
+  return [...new Set(previews.flatMap((preview) => {
+    const row = conversationRowForPreview(preview)
+    return row ? [row] : []
+  }))]
 }
 
 function collectBossConversationSignals() {
@@ -141,7 +524,10 @@ function collectBossConversationSignals() {
     })
   return nodes.flatMap((node) => {
     const text = node.textContent?.replace(/\s+/gu, ' ').trim().slice(0, 5_000) ?? ''
-    const platformMessageId = node.getAttribute('data-message-id') || node.getAttribute('data-msg-id')
+    const messageNode = node.closest('[data-message-id], [data-msg-id]')
+      || node.querySelector('[data-message-id], [data-msg-id]')
+    const platformMessageId = messageNode?.getAttribute('data-message-id')
+      || messageNode?.getAttribute('data-msg-id')
     if (!platformMessageId) return []
     const kind = classifyConversationSignal(text)
     return [{
@@ -190,12 +576,21 @@ function classifyConversationSignal(text) {
 }
 
 function conversationContext() {
-  const editor = uniqueVisible('[contenteditable="true"], textarea[placeholder*="消息"], textarea[placeholder*="沟通"]')
-  const sendButton = uniqueVisible('button, [role="button"]', (element) => element.textContent?.trim() === '发送')
+  const editor = uniqueVisible([
+    '[contenteditable="true"]',
+    'textarea[placeholder*="消息"]', 'textarea[placeholder*="沟通"]', 'textarea[placeholder*="回复"]',
+    '[class*="chat-input"] textarea', '[class*="chat-input"] [contenteditable]',
+    '[class*="message-input"] textarea', '[class*="message-input"] [contenteditable]'
+  ].join(','))
+  const sendButton = uniqueVisible('button, [role="button"], a', (element) => (
+    element.textContent?.replace(/\s+/gu, '').trim() === '发送'
+    || /(?:^|[-_])send(?:[-_]|$)/iu.test(String(element.className))
+  ))
   if (!editor || !sendButton) return null
-  const identityNode = uniqueVisible('[data-boss-id], [data-uid], [data-recruiter-id], [data-geek-id]')
-  const conversationNode = uniqueVisible('[data-conversation-id], [data-lid], [data-chat-id]')
-  const nameNode = uniqueVisible('[class*="chat-name"], [class*="boss-name"], [class*="recipient-name"]')
+  const root = currentConversationRoot(editor, sendButton)
+  const identityNode = uniqueVisibleIn(root, '[data-boss-id], [data-uid], [data-recruiter-id], [data-geek-id]')
+  const conversationNode = uniqueVisibleIn(root, '[data-conversation-id], [data-lid], [data-chat-id]')
+  const nameNode = uniqueVisibleIn(root, '[class*="chat-name"], [class*="boss-name"], [class*="recipient-name"]')
   const platformRecipientId = identityNode?.getAttribute('data-boss-id')
     || identityNode?.getAttribute('data-uid')
     || identityNode?.getAttribute('data-recruiter-id')
@@ -204,9 +599,24 @@ function conversationContext() {
     || conversationNode?.getAttribute('data-lid')
     || conversationNode?.getAttribute('data-chat-id')
   const recipientName = nameNode?.textContent?.trim()
+  if ((!platformRecipientId || !conversationId || !recipientName) && selectedConversationTarget) {
+    const visible = visibleConversationIdentity()
+    if (!visible || !recipientNamesMatch({
+      rowName: selectedConversationTarget.recipient.recipientName,
+      contextName: visible.recipientName,
+      company: selectedConversationTarget.target.company
+    })) return null
+    return {
+      root,
+      editor,
+      sendButton,
+      recipient: selectedConversationTarget.recipient
+    }
+  }
   if (!platformRecipientId || !conversationId || !recipientName) return null
-  const titleNode = uniqueVisible('[class*="boss-title"], [class*="recipient-title"], [class*="chat-position"]')
+  const titleNode = uniqueVisibleIn(root, '[class*="boss-title"], [class*="recipient-title"], [class*="chat-position"]')
   return {
+    root,
     editor,
     sendButton,
     recipient: {
@@ -218,6 +628,28 @@ function conversationContext() {
         : {})
     }
   }
+}
+
+function currentConversationRoot(editor, sendButton) {
+  const preferred = editor.closest([
+    '.chat-conversation', '[class*="chat-conversation"]',
+    '[class*="conversation-detail"]', '[class*="chat-panel"]'
+  ].join(','))
+  if (preferred?.contains(sendButton)) return preferred
+  let current = editor.parentElement
+  let fallback = document.body
+  while (current && current !== document.body) {
+    if (current.contains(sendButton)) {
+      fallback = current
+      if (
+        uniqueVisibleIn(current, '[data-boss-id], [data-uid], [data-recruiter-id], [data-geek-id]')
+        && uniqueVisibleIn(current, '[data-conversation-id], [data-lid], [data-chat-id]')
+        && uniqueVisibleIn(current, '[class*="chat-name"], [class*="boss-name"], [class*="recipient-name"]')
+      ) return current
+    }
+    current = current.parentElement
+  }
+  return fallback
 }
 
 function visibleConversationIdentity() {
@@ -300,9 +732,14 @@ async function sendBossResumeAttachment(payload) {
 function uniqueResumeFileInput(mimeType) {
   const inputs = [...document.querySelectorAll('input[type="file"]')].filter((input) => {
     const accept = input.getAttribute('accept')?.toLocaleLowerCase() ?? ''
-    return mimeType === 'application/pdf'
+    const accepted = mimeType === 'application/pdf'
       ? accept.includes('.pdf') || accept.includes('application/pdf')
       : accept.includes('docx') || accept.includes('wordprocessingml')
+    if (!accepted) return false
+    const control = input.closest('label, button, [role="button"], .btn, [class*="upload"], [class*="file"]')
+    if (!control || control.closest('[hidden], [aria-hidden="true"]') || !isVisible(control)) return false
+    const label = normalizeVisibleText(control.textContent ?? '')
+    return /(简历|附件|resume)/iu.test(label) && !/(图片|image)/iu.test(label)
   })
   return inputs.length === 1 ? inputs[0] : null
 }
@@ -337,9 +774,21 @@ function attachmentReceiptIds() {
 }
 
 function attachmentReceiptCandidates(fileName) {
-  return [...document.querySelectorAll('[data-attachment-id], [data-file-id], [class*="file-message"], [class*="attachment"]')].flatMap((element) => {
-    if (fileName && !element.textContent?.includes(fileName)) return []
-    const id = element.getAttribute('data-attachment-id') || element.getAttribute('data-file-id')
+  const candidates = [...document.querySelectorAll([
+    '[data-attachment-id]', '[data-file-id]', '[data-message-id]', '[data-msg-id]',
+    '[class*="file-message"]', '[class*="attachment"]'
+  ].join(','))]
+  const receiptNodes = [...new Set(candidates.flatMap((element) => {
+    const node = element.closest('[data-attachment-id], [data-file-id], [data-message-id], [data-msg-id]')
+      || element.querySelector('[data-attachment-id], [data-file-id], [data-message-id], [data-msg-id]')
+    return node ? [node] : []
+  }))]
+  return receiptNodes.flatMap((node) => {
+    if (fileName && !node.textContent?.includes(fileName)) return []
+    const id = node.getAttribute('data-attachment-id')
+      || node.getAttribute('data-file-id')
+      || node.getAttribute('data-message-id')
+      || node.getAttribute('data-msg-id')
     return id ? [{ id: id.slice(0, 500) }] : []
   })
 }
@@ -420,12 +869,24 @@ function messageReceiptIds() {
 }
 
 function messageReceiptCandidates(body) {
-  return [...document.querySelectorAll('[class*="message-content"], [class*="chat-text"], [class*="message-text"]')].flatMap((element) => {
-    if (body && element.textContent?.trim() !== body) return []
-    const node = element.closest('[data-message-id], [data-msg-id], [class*="message-item"], [class*="chat-record"]')
-    const id = node?.getAttribute('data-message-id') || node?.getAttribute('data-msg-id')
+  const idNodes = [...document.querySelectorAll('[data-message-id], [data-msg-id], [data-last-message-id]')]
+  const contentNodes = [...document.querySelectorAll('[class*="message-content"], [class*="chat-text"], [class*="message-text"]')]
+    .flatMap((element) => {
+      const node = element.closest('[data-message-id], [data-msg-id], [data-last-message-id], [class*="message-item"], [class*="chat-record"]')
+      return node ? [node] : []
+    })
+  const receipts = [...new Set([...idNodes, ...contentNodes])].flatMap((node) => {
+    if (body) {
+      const exactBody = normalizeVisibleText(body)
+      const leaves = [node, ...node.querySelectorAll('*')].filter((element) => element.children.length === 0)
+      if (!leaves.some((element) => normalizeVisibleText(element.textContent ?? '') === exactBody)) return []
+    }
+    const id = node?.getAttribute('data-message-id')
+      || node?.getAttribute('data-msg-id')
+      || node?.getAttribute('data-last-message-id')
     return id && node ? [{ id: id.slice(0, 500), node }] : []
   })
+  return [...new Map(receipts.map((receipt) => [receipt.id, receipt])).values()]
 }
 
 function fingerprint(value) {
@@ -440,6 +901,16 @@ function fingerprint(value) {
 
 function uniqueVisible(selector, predicate = () => true) {
   const matches = visibleMatches(selector, predicate)
+  return matches.length === 1 ? matches[0] : null
+}
+
+function uniqueVisibleIn(root, selector, predicate = () => true) {
+  const matches = [
+    ...(root.matches?.(selector) ? [root] : []),
+    ...root.querySelectorAll(selector)
+  ].filter((element) => (
+    isVisible(element) && predicate(element)
+  ))
   return matches.length === 1 ? matches[0] : null
 }
 
@@ -598,11 +1069,30 @@ function visibleBoundedText(root, maximum) {
 function detectSessionState() {
   const host = location.hostname
   if (host === 'www.zhipin.com' || host.endsWith('.zhipin.com')) {
+    if (detectAccessRestriction()) return 'access-restricted'
     if (document.querySelector('a[href*="/web/geek/resume"], a[href*="/web/geek/recommend"]')) return 'available'
     if (visibleTextIncludes(['登录', '扫码登录'])) return 'login-required'
     return 'unknown'
   }
   return 'unknown'
+}
+
+function detectUserAttention() {
+  if (detectAccessRestriction()) return 'access-restricted'
+  if (visibleTextIncludes(['安全验证', '验证码', '完成验证', '滑块验证', '请先验证'])) return 'captcha-required'
+  if (detectSessionState() === 'login-required') return 'login-required'
+  return null
+}
+
+function detectAccessRestriction() {
+  return /\/web\/passport\/zp\/403\.html$/u.test(location.pathname)
+    || visibleTextIncludes([
+      '访问受限',
+      '暂时无法访问此页面',
+      'ip 存在异常行为',
+      '请勿频繁提交刷新请求',
+      '已暂时被禁止访问'
+    ])
 }
 
 function visibleTextIncludes(signals) {

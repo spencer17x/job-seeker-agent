@@ -3,7 +3,7 @@
   "name": "JobSeeker Agent Browser Extension",
   "version": "0.1.0",
   "description": "Local browser bridge for JobSeeker Agent job-platform sessions.",
-  "permissions": ["tabs", "alarms", "storage", "notifications"],
+  "permissions": ["tabs", "scripting", "alarms", "storage", "notifications"],
   "host_permissions": [
     "https://www.zhipin.com/*"
   ],

@@ -5,9 +5,12 @@ import {
   assertBossMessageReadyToSend,
   createBossConversationThread,
   createBossMessageDraft,
+  clearInvalidBossRecipientBinding,
   failBossMessage,
+  isBossResumeRetryDue,
   markBossMessageSending,
   recordBossMessageReceipt,
+  retryBossMessageDraft,
   reviseBossMessageDraft,
   verifyBossConversationRecipient
 } from './boss-conversation'
@@ -88,6 +91,34 @@ describe('BOSS conversation state', () => {
     })).toThrow()
   })
 
+  it('clears provisional target-derived bindings only before outreach has a receipt', () => {
+    const invalid = verifyBossConversationRecipient({
+      thread: createBossConversationThread({ applicationId: 'application-1', now }),
+      platformRecipientId: 'target:recipient', conversationId: 'target:conversation',
+      recipientName: '昨天', now
+    })
+    expect(clearInvalidBossRecipientBinding({ thread: invalid, now })).toMatchObject({
+      status: 'draft',
+      recipientName: undefined,
+      platformRecipientId: undefined,
+      conversationId: undefined,
+      recipientFingerprint: undefined
+    })
+    const provisional = verifyBossConversationRecipient({
+      thread: createBossConversationThread({ applicationId: 'application-2', now }),
+      platformRecipientId: 'target:recipient', conversationId: 'target:conversation',
+      recipientName: '张女士示例公司', now
+    })
+    expect(clearInvalidBossRecipientBinding({ thread: provisional, now })).toMatchObject({
+      status: 'draft',
+      recipientName: undefined,
+      platformRecipientId: undefined,
+      conversationId: undefined
+    })
+    const active = { ...provisional, recruitmentStage: 'awaiting-reply' as const }
+    expect(clearInvalidBossRecipientBinding({ thread: active, now })).toBe(active)
+  })
+
   it('accepts only receipts matching the approved body and recipient', () => {
     const thread = createBossConversationThread({ applicationId: 'application-1', now })
     const draft = createBossMessageDraft({ threadId: thread.id, kind: 'opener', body: 'Hello', evidenceFactIds: [], now })
@@ -114,7 +145,29 @@ describe('BOSS conversation state', () => {
       message: approved, body: approved.body, recipientFingerprint: 'recipient:one', now
     })
     expect(sending.status).toBe('sending')
-    expect(failBossMessage({ message: sending, failureCode: 'BOSS_SEND_NOT_VERIFIED', now }))
-      .toMatchObject({ status: 'failed', failureCode: 'BOSS_SEND_NOT_VERIFIED' })
+    const failed = failBossMessage({ message: sending, failureCode: 'BOSS_SEND_NOT_VERIFIED', now })
+    expect(failed).toMatchObject({
+      status: 'failed', failureCode: 'BOSS_SEND_NOT_VERIFIED', attemptCount: 1,
+      nextRetryAt: '2026-08-19T08:05:00.000Z'
+    })
+    expect(retryBossMessageDraft({ message: failed, now: '2026-08-19T08:04:59.000Z' })).toBeNull()
+    expect(retryBossMessageDraft({ message: failed, now: '2026-08-19T08:05:00.000Z' }))
+      .toMatchObject({ status: 'awaiting-approval', attemptCount: 1, failureCode: undefined })
+  })
+
+  it('retries a failed requested resume only after its bounded backoff is due', () => {
+    const thread = {
+      ...createBossConversationThread({ applicationId: 'application-1', now }),
+      recruitmentStage: 'resume-requested' as const,
+      resumeSendAttemptCount: 1,
+      resumeSendFailureCode: 'BOSS_RESUME_SEND_NOT_VERIFIED',
+      nextResumeRetryAt: '2026-08-19T08:05:00.000Z'
+    }
+    expect(isBossResumeRetryDue({ thread, now: '2026-08-19T08:04:59.000Z' })).toBe(false)
+    expect(isBossResumeRetryDue({ thread, now: '2026-08-19T08:05:00.000Z' })).toBe(true)
+    expect(isBossResumeRetryDue({
+      thread: { ...thread, resumeSendAttemptCount: 3 },
+      now: '2026-08-19T09:00:00.000Z'
+    })).toBe(false)
   })
 })
