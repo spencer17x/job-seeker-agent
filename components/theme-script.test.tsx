@@ -8,7 +8,7 @@ afterEach(() => {
   document.documentElement.removeAttribute('data-theme-mode')
 })
 
-it('applies the system theme when local storage is unavailable', () => {
+it('applies the readable light theme when local storage is unavailable', () => {
   vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('restricted') })
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
@@ -20,6 +20,6 @@ it('applies the system theme when local storage is unavailable', () => {
 
   expect(source).toBeTruthy()
   expect(() => Function(source!)()).not.toThrow()
-  expect(document.documentElement.dataset.themeMode).toBe('system')
+  expect(document.documentElement.dataset.themeMode).toBe('light')
   expect(document.documentElement.dataset.theme).toBe('light')
 })

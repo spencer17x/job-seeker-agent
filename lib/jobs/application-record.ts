@@ -186,7 +186,34 @@ export async function prepareApplicationPacket(input: {
   now: string
 }): Promise<ApplicationPacket> {
   const result = await input.store.transaction([...packetStoreNames], 'readwrite', async (transaction) => {
-    const packet = await buildApplicationPacket(transaction, input.recordId, input.resume)
+    let packet = await buildApplicationPacket(transaction, input.recordId, input.resume)
+    if (!packet.ready && packet.record.targetJobId) {
+      const targetJob = await transaction.get('targetJobs', packet.record.targetJobId)
+      const stableWorkflowChecks = packet.checks
+        .filter((check) => !['posting-current', 'recommendation-current'].includes(check.code))
+        .every((check) => check.passed)
+      const canRebindCurrentMetadata = Boolean(
+        stableWorkflowChecks
+        && packet.posting.status === 'open'
+        && targetJob
+        && targetJob.title === packet.posting.title
+        && (targetJob.company ?? '') === packet.posting.company
+        && targetJob.description === packet.posting.description
+        && packet.recommendation
+        && packet.recommendation.eligibility !== 'excluded'
+        && packet.recommendation.analyzedTargetJobId === targetJob.id
+      )
+      if (canRebindCurrentMetadata) {
+        const rebound = applicationRecordSchema.parse({
+          ...packet.record,
+          postingContentHash: packet.posting.contentHash,
+          recommendationFingerprint: packet.recommendation!.inputFingerprint,
+          updatedAt: input.now
+        })
+        await transaction.put('applicationRecords', rebound)
+        packet = await buildApplicationPacket(transaction, input.recordId, input.resume)
+      }
+    }
     if (!packet.ready || !packet.run?.changeInputFingerprint || !packet.variant) {
       const current = packet.record.status === 'ready-to-apply' || packet.record.status === 'analyzing'
         ? transitionApplicationRecord({ record: packet.record, status: 'preparing', now: input.now })
@@ -259,21 +286,24 @@ export async function prepareReadyBossApplicationPackets(input: {
   const packets = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
   const prepared = [] as ApplicationPacket[]
   for (const packet of packets) {
-    if (
-      !packet.ready
-      || detectMarketplaceFromJobUrl(packet.posting.canonicalUrl) !== 'boss'
-    ) continue
+    if (detectMarketplaceFromJobUrl(packet.posting.canonicalUrl) !== 'boss') continue
     const now = input.now()
-    const next = packet.record.status === 'ready-to-apply'
-      ? packet
-      : ['saved', 'analyzing', 'preparing'].includes(packet.record.status)
-        ? await prepareApplicationPacket({
-            store: input.store,
-            recordId: packet.record.id,
-            resume: input.resume,
-            now
-          })
-        : null
+    let next: ApplicationPacket | null = null
+    try {
+      next = packet.record.status === 'ready-to-apply' && packet.ready
+        ? packet
+        : ['saved', 'analyzing', 'preparing', 'ready-to-apply'].includes(packet.record.status)
+          ? await prepareApplicationPacket({
+              store: input.store,
+              recordId: packet.record.id,
+              resume: input.resume,
+              now
+            })
+          : null
+    } catch (error) {
+      if (!(error instanceof ApplicationRecordError) || error.code !== 'PACKET_NOT_READY') throw error
+      continue
+    }
     if (!next) continue
     const conversation = await ensureBossOpeningDraft({ store: input.store, applicationId: packet.record.id, now })
     if (packet.record.status !== 'ready-to-apply' || conversation.created) prepared.push(next)

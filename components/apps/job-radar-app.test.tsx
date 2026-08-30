@@ -105,11 +105,21 @@ function renderRadar(options: {
 afterEach(async () => {
   cleanup()
   mockPathname = '/jobs'
+  delete document.documentElement.dataset.theme
   window.localStorage.clear()
   await Promise.all(stores.splice(0).map((store) => store.close()))
 })
 
 describe('JobRadarApp', () => {
+  it('keeps the workspace on its accessible light theme boundary', async () => {
+    document.documentElement.dataset.theme = 'dark'
+    const store = createStore()
+    const { container } = renderRadar({ store })
+
+    expect(await screen.findByRole('heading', { name: 'Complete job setup first' })).toBeVisible()
+    expect(container.querySelector('.job-workspace')).toHaveAttribute('data-ui-theme', 'light')
+  })
+
   it('shows the local-first empty state with only BOSS Zhipin', async () => {
     mockPathname = '/jobs/opportunities'
     const store = createStore()
@@ -374,5 +384,30 @@ describe('BossConversationQueue', () => {
     expect(onRevise).toHaveBeenCalledWith(message.id, 'Revised opener')
     await user.click(screen.getByRole('button', { name: 'Verify recipient and approve' }))
     expect(onVerify).toHaveBeenCalledWith(message.id)
+  })
+
+  it('shows managed queue progress instead of per-message approval controls', () => {
+    const thread = createBossConversationThread({ applicationId: 'application-1', now })
+    const message = createBossMessageDraft({
+      threadId: thread.id, kind: 'opener', body: 'Hello BOSS', evidenceFactIds: [], now
+    })
+    render(<NextIntlClientProvider locale="en" messages={en}>
+      <BossConversationQueue
+        managed
+        threads={[thread]}
+        messages={[message]}
+        applications={[{
+          id: 'application-1', postingId: posting.id, sourceDraftId: 'ada-draft', status: 'ready-to-apply',
+          targetJobId: 'target-1', resumeVariantId: 'variant-1', notes: '', createdAt: now, updatedAt: now
+        }]}
+        postings={[posting]}
+        onRevise={vi.fn()}
+        onVerify={vi.fn()}
+        onSend={vi.fn()}
+      />
+    </NextIntlClientProvider>)
+    expect(screen.getByText(/opening the matching job conversation/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Verify recipient and approve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send approved message' })).not.toBeInTheDocument()
   })
 })

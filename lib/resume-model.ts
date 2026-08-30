@@ -2,7 +2,8 @@ import { z } from 'zod'
 
 export const resumeLocaleSchema = z.enum(['zh', 'en'])
 
-export const resumeSourceSchema = z.enum(['sample', 'upload', 'paste', 'ai-generated', 'ai-chat'])
+export const resumeSourceSchema = z.enum(['sample', 'upload', 'paste', 'boss', 'ai-generated', 'ai-chat'])
+export const TRUSTED_RESUME_SOURCES = ['paste', 'upload', 'boss'] as const
 
 const linkSchema = z.object({
   label: z.string().default(''),
@@ -77,6 +78,10 @@ export const resumeDataSchema = z.object({
 export type ResumeLocale = z.infer<typeof resumeLocaleSchema>
 export type ResumeSource = z.infer<typeof resumeSourceSchema>
 export type ResumeData = z.infer<typeof resumeDataSchema>
+
+export function isTrustedResumeSource(source: ResumeSource | string | undefined): source is typeof TRUSTED_RESUME_SOURCES[number] {
+  return TRUSTED_RESUME_SOURCES.includes(source as typeof TRUSTED_RESUME_SOURCES[number])
+}
 
 export type ResumeSnapshot = {
   id: string

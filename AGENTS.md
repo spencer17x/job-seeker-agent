@@ -21,7 +21,7 @@ Preserve these product invariants:
 - Career evidence is the boundary for real resume claims. Missing evidence becomes a question or an explicit gap, never an invented achievement.
 - AI output is a proposal, not authority. Validate model output deterministically and require the existing approval steps before applying it.
 - Never silently rewrite the master resume. Accepted optimization changes create or update a separate job-specific `ResumeVariant` unless the user explicitly requests a different product change.
-- Sample and AI-generated sandbox resumes are not verified career evidence. Only trusted upload or paste flows may be imported into the evidence workspace under the existing rules.
+- Sample and AI-generated sandbox resumes are not verified career evidence. Only trusted upload, paste, or explicitly reviewed bounded BOSS-resume imports may enter the evidence workspace under the existing rules.
 - Durable user data belongs to the browser origin. Do not add server-side persistence, accounts, analytics, cloud sync, or uploaded-file retention without an explicit product decision.
 - Cloud use must remain explicit. Automatic mode may fall back to a cloud provider only when the saved preference allows it; do not introduce silent fallback.
 - API keys and career data must not be logged, echoed, or persisted by server routes.

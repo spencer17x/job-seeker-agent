@@ -23,10 +23,10 @@ describe('JobAgentSetup', () => {
     renderSetup({ trustedResume: false })
     await user.click(screen.getByRole('button', { name: 'Let Agent analyze goal' }))
     expect(screen.getByRole('button', { name: 'Continue to analysis' })).toBeDisabled()
-    expect(screen.getByText('Upload a trusted resume')).toBeVisible()
+    expect(screen.getByText('Import a trusted resume')).toBeVisible()
   })
 
-  it('reviews analysis, saves job-site criteria, then explicitly starts delegation', async () => {
+  it('reviews criteria once and then starts fully managed delegation', async () => {
     const user = userEvent.setup()
     const onSave = vi.fn(async () => true)
     const onStart = vi.fn(async () => undefined)
@@ -41,18 +41,17 @@ describe('JobAgentSetup', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm and choose job criteria' }))
     expect(screen.getByRole('textbox', { name: 'Target titles' })).toHaveValue('Platform Engineer')
     await user.click(screen.getByRole('button', { name: 'Save job criteria' }))
-    expect(await screen.findByText('Confirm delegation rules')).toBeVisible()
-    expect(screen.getByRole('radio', { name: 'Approve key actions' })).toBeChecked()
-    expect(screen.getByRole('checkbox', { name: /Automatically send/ })).toBeDisabled()
-    await user.click(screen.getByRole('checkbox', { name: /I reviewed these choices/ }))
-    expect(onChange).not.toHaveBeenCalledWith('autonomy', 'autopilot')
-    expect(onChange).not.toHaveBeenCalledWith('autoSendResume', true)
-    await user.click(screen.getByRole('button', { name: 'Confirm and start Agent' }))
+    expect(await screen.findByText('Start the fully managed Job Agent')).toBeVisible()
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: /I reviewed these choices/ })).not.toBeInTheDocument()
+    expect(onChange).toHaveBeenCalledWith('autonomy', 'autopilot')
+    expect(onChange).toHaveBeenCalledWith('autoSendResume', true)
+    await user.click(screen.getByRole('button', { name: 'Start Agent' }))
     expect(onSave).toHaveBeenCalledTimes(1)
     expect(onStart).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps automatic resume sending separate from the automation level', async () => {
+  it('does not expose per-action communication or resume approval controls', async () => {
     const user = userEvent.setup()
     const onChange = vi.fn()
     renderSetup({
@@ -64,7 +63,9 @@ describe('JobAgentSetup', () => {
     await user.click(screen.getByRole('button', { name: 'Continue to analysis' }))
     await user.click(screen.getByRole('button', { name: 'Confirm and choose job criteria' }))
     await user.click(screen.getByRole('button', { name: 'Save job criteria' }))
-    await user.click(screen.getByRole('checkbox', { name: /Automatically send/ }))
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(onChange).toHaveBeenCalledWith('autonomy', 'autopilot')
     expect(onChange).toHaveBeenCalledWith('autoSendResume', true)
   })
 })

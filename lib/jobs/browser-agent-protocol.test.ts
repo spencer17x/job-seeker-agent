@@ -90,6 +90,50 @@ describe('browser agent protocol', () => {
     })).rejects.toThrow()
   })
 
+  it('validates a bounded resume snapshot from the fixed BOSS profile page', async () => {
+    const target = new EventTarget()
+    target.addEventListener(BROWSER_AGENT_REQUEST_EVENT, (event) => {
+      const request = (event as CustomEvent<{ requestId: string; action: string }>).detail
+      if (request.action !== 'collect-boss-resume') return
+      target.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
+        requestId: request.requestId,
+        ok: true,
+        resumeSnapshot: {
+          sourceUrl: 'https://www.zhipin.com/web/geek/resume',
+          text: '个人优势 TypeScript AI Agent 产品研发。工作经历 示例公司 AI 全栈工程师。',
+          collectedAt: '2026-08-29T08:00:00.000Z'
+        }
+      } }))
+    })
+    const { collectBossResumeSnapshot } = await import('./browser-agent-protocol')
+    await expect(collectBossResumeSnapshot({ window: target as Window, timeoutMs: 50 })).resolves.toMatchObject({
+      ok: true,
+      resumeSnapshot: { sourceUrl: 'https://www.zhipin.com/web/geek/resume' }
+    })
+  })
+
+  it('rejects a resume snapshot attributed to a non-BOSS or non-resume URL', async () => {
+    const target = new EventTarget()
+    target.addEventListener(BROWSER_AGENT_REQUEST_EVENT, (event) => {
+      const request = (event as CustomEvent<{ requestId: string; action: string }>).detail
+      if (request.action !== 'collect-boss-resume') return
+      target.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
+        requestId: request.requestId,
+        ok: true,
+        resumeSnapshot: {
+          sourceUrl: 'https://attacker.example/web/geek/resume',
+          text: '个人优势 TypeScript AI Agent 产品研发。工作经历 示例公司 AI 全栈工程师。',
+          collectedAt: '2026-08-29T08:00:00.000Z'
+        }
+      } }))
+    })
+    const { collectBossResumeSnapshot } = await import('./browser-agent-protocol')
+    await expect(collectBossResumeSnapshot({ window: target as Window, timeoutMs: 50 })).resolves.toMatchObject({
+      ok: false,
+      error: 'EXTENSION_UNAVAILABLE'
+    })
+  })
+
   it('validates a BOSS recipient only when all platform identities are present', async () => {
     const target = new EventTarget()
     target.addEventListener(BROWSER_AGENT_REQUEST_EVENT, (event) => {
@@ -108,6 +152,41 @@ describe('browser agent protocol', () => {
     await expect(inspectBossBrowserConversation({ window: target as Window, timeoutMs: 50 })).resolves.toMatchObject({
       recipient: { platformRecipientId: 'boss-user-1', conversationId: 'conversation-1' }
     })
+  })
+
+  it('opens only an allowlisted BOSS job conversation with a bounded target identity', async () => {
+    const target = new EventTarget()
+    target.addEventListener(BROWSER_AGENT_REQUEST_EVENT, (event) => {
+      const request = (event as CustomEvent<{ requestId: string; action: string; payload: { url: string; title: string; company: string } }>).detail
+      if (request.action !== 'open-boss-conversation') return
+      expect(request.payload).toEqual({
+        url: 'https://www.zhipin.com/job_detail/abc.html',
+        title: '平台工程师',
+        company: '示例公司'
+      })
+      target.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
+        requestId: request.requestId,
+        ok: true,
+        recipient: {
+          platformRecipientId: 'boss-user-1', conversationId: 'conversation-1',
+          recipientName: '招聘经理', recipientTitle: '平台工程师'
+        }
+      } }))
+    })
+    const { openBossBrowserConversation } = await import('./browser-agent-protocol')
+    await expect(openBossBrowserConversation({
+      window: target as Window,
+      url: 'https://www.zhipin.com/job_detail/abc.html#detail',
+      title: '平台工程师',
+      company: '示例公司',
+      timeoutMs: 50
+    })).resolves.toMatchObject({ ok: true, recipient: { conversationId: 'conversation-1' } })
+    await expect(openBossBrowserConversation({
+      window: target as Window,
+      url: 'https://evil.example/job_detail/abc.html',
+      title: '平台工程师',
+      company: '示例公司'
+    })).rejects.toThrow()
   })
 
   it('accepts only bounded de-identified conversation signals', async () => {

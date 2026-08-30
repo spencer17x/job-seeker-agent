@@ -30,7 +30,7 @@ This is structured evidence retrieval for a resume-tailoring domain. It is inten
 
 | Record | Browser storage | Notes |
 | --- | --- | --- |
-| Resume drafts and snapshots | `localStorage` | Structured resume data; sample/demo data is not promoted to verified evidence |
+| Resume drafts and snapshots | `localStorage` | Structured resume data from upload, paste, or explicitly reviewed bounded BOSS import; sample/demo data is not promoted to verified evidence |
 | Evidence sources and career facts | IndexedDB | Imported facts remain visually unconfirmed until reviewed; original file bytes are rejected by the schema |
 | Target jobs, requirements, mappings | IndexedDB | Powers reviewable requirement matrices and deterministic alignment |
 | Resume variants and optimization runs | IndexedDB | Enables job-specific versions and resumable state transitions |
@@ -111,6 +111,7 @@ Chrome does not currently guarantee Chinese as a Prompt API input or output lang
 - A Job Agent discovery refresh sends the configured public provider enum and board identifier to the same-origin discovery route. That route fetches public posting data from the fixed official host. Resume drafts, career facts, recommendation scores, conversation drafts, application notes, and application status are not included in source requests.
 - A PDF/DOCX/TXT upload is sent to the same-origin extraction route. Bytes are processed transiently and are not stored by JobSeeker Agent. The route returns extracted text.
 - Pasted or extracted raw resume text is processed in the browser when Chrome Built-in AI is selected. It is sent through the same-origin parse route to the configured OpenAI-compatible provider only when that provider is explicitly selected or Automatic mode has saved fallback consent and the local model is unavailable or over its context budget.
+- A BOSS resume import opens only the fixed `https://www.zhipin.com/web/geek/resume` page in an inactive extension tab, extracts at most 40,000 characters of visible text, closes the tab, and requires an in-app preview confirmation before creating a `boss` draft and Career Evidence. No cookie, credential, raw HTML, or arbitrary BOSS URL crosses the bridge.
 - Demo / Sandbox generation follows the same saved provider preference. Locally generated and cloud-generated demo resumes are both classified as `ai-generated` and never become verified Career Evidence.
 - Cloud agent tasks receive only the context assembled for that task, plus the user's instructions. Planning sends requirements, matches, facts already referenced by the Requirement Matrix, and a deterministic catalog of safe editable targets containing their paths, current text, and allowed transformations. The catalog excludes protected profile fields and unrelated resume sections. Change generation sends the full active structured resume and full target-job description so the provider can produce exact path/original edits, while requirement, match, and career-fact collections are limited to IDs cited by the approved plan.
 - Chrome Built-in AI tasks run in the browser and do not pass their prompt through JobSeeker Agent route handlers.
@@ -323,7 +324,9 @@ one oldest cycle, and reports completed/failed/skipped before another cycle can 
 Chrome startup restores the alarm and coalesces missed periods into one catch-up cycle;
 it does not replay every missed interval or execute BOSS actions while Chrome is closed.
 No job, resume, career fact, message body, platform credential, or cookie enters this
-extension queue.
+extension queue. Outside that queue, an explicit Resume Studio action may receive a
+bounded visible-text snapshot from the fixed BOSS online-resume page; the extension
+does not persist it.
 
 ## GitHub Pages boundary
 

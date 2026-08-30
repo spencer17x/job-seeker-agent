@@ -153,6 +153,14 @@ describe('career evidence import', () => {
     }
   )
 
+  it('accepts an explicitly reviewed BOSS resume import as Career Evidence', () => {
+    expect(buildCareerEvidenceImport(resume('boss'), {
+      draftId: 'draft-boss',
+      label: 'BOSS online resume',
+      now
+    })).toMatchObject({ source: { type: 'resume-import', label: 'BOSS online resume' } })
+  })
+
   it('atomically imports, lists, confirms, and deletes unreferenced facts', async () => {
     const store = testStore()
     const service = createCareerEvidenceService({ store, now: () => now })

@@ -24,14 +24,14 @@ export function scoreJobRecommendation(input: {
   const text = normalizeSearchText(`${input.posting.title}\n${input.posting.description}`)
   const exclusion = exclusionReason(input.posting, input.profile, text, input.now)
   const unknown = hasUnknownHardPreference(input.posting, input.profile)
+  const { createdAt: _profileCreatedAt, updatedAt: _profileUpdatedAt, ...profileConfiguration } = input.profile
   const fingerprint = createJobInputFingerprint({
     posting: {
       id: input.posting.id,
       contentHash: input.posting.contentHash,
-      status: input.posting.status,
-      lastCheckedAt: input.posting.lastCheckedAt
+      status: input.posting.status
     },
-    profile: input.profile,
+    profile: profileConfiguration,
     sourceDraftId: input.sourceDraftId,
     facts: [...input.facts]
       .map((fact) => ({ id: fact.id, tags: [...fact.tags].sort(compareStrings), updatedAt: fact.updatedAt }))

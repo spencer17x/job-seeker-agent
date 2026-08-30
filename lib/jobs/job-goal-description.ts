@@ -29,6 +29,8 @@ export function analyzeJobGoalDescription(description: string): AnalyzedJobGoal 
   const titles = knownTitles.filter((title) => compact.toLocaleLowerCase().includes(
     title.replace(/\s+/gu, '').toLocaleLowerCase()
   ))
+  if (/AI\s*Agent(?:\s*(?:岗位|职位|工程师))?/iu.test(text)) titles.push('AI Agent工程师')
+  if (/AI\s*全栈(?:\s*(?:岗位|职位|工程师))?/iu.test(text)) titles.push('AI全栈工程师')
   if (/(前端|front[- ]?end)/iu.test(text)) titles.push('前端工程师')
   if (/(全栈|full[- ]?stack)/iu.test(text)) titles.push('全栈工程师')
   if (/(后端|back[- ]?end)/iu.test(text)) titles.push('后端工程师')

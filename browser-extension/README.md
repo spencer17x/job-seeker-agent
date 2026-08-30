@@ -11,6 +11,13 @@ Given a bounded title query, the background worker constructs the fixed
 tab, collects results from registered frames, and closes the tab. The page cannot
 supply an arbitrary URL or host.
 
+After the user starts managed mode, the `open-boss-conversation` action accepts only a
+previously queued canonical `https://www.zhipin.com/job_detail/*.html` URL plus bounded
+title and company identity. The page probe requires those identities in the visible job
+page and exactly one visible communication control before clicking. A login or CAPTCHA
+surface is brought to the foreground for the user; it is never bypassed. The resulting
+chat is usable only when stable recipient and conversation identities can be inspected.
+
 When Job Agent is enabled, the worker stores its schedule plus a bounded, content-free
 cycle queue. A Chrome alarm queues work every 15 minutes before attempting to wake a
 JobSeeker Agent tab. Closing the page leaves the oldest cycle pending; reopening the page
@@ -18,7 +25,9 @@ dispatches it and waits for a completed/failed/skipped receipt before another cy
 run. Chrome restart restores the alarm and coalesces missed intervals into one catch-up
 cycle. Only a localized `/jobs` workspace tab may receive a cycle; Studio and other
 legacy tool tabs never report scheduler readiness. Job results, career data, resume content, credentials, and inbox content are not
-persisted in extension storage.
+persisted in extension storage. An explicit Resume Studio action may open only the
+fixed BOSS online-resume page, return a bounded visible-text snapshot for local review,
+and close the temporary tab; it never returns raw HTML or cookies.
 
 On the same schedule, an already-open BOSS chat may be checked for an explicit,
 incoming interview-and-scheduling signal. The page probe returns only a hashed signal
@@ -46,8 +55,8 @@ child frames. It returns a recipient only when one frame contains exactly one st
 platform recipient identity, stable conversation identity, recipient name, editor, and send control. Display-text-derived identities remain diagnostic-only. Ambiguous or
 missing controls fail closed; inspection does not type or send a message.
 
-After the exact message is approved, the send adapter repeats the same recipient and
-conversation checks, recomputes the FNV-1a body fingerprint, writes through the native
+After the one-time Start authorization, the managed send adapter repeats the same
+recipient and conversation checks, recomputes the FNV-1a final-body fingerprint, writes through the native
 editor setter, verifies the rendered editor value, and clicks the unique send control.
 It snapshots existing message IDs before the click and returns success only after one newly observed message-content node exactly matches the body and its
 platform message node exposes a previously unseen ID plus sent, delivered, or read status. Otherwise it

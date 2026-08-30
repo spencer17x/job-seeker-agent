@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isTrustedResumeSource } from '@/lib/resume-model'
 import { createDomainStore, type IndexedDbDomainStore } from '@/lib/agent/domain-store'
 import { readMigratedStorageValue } from '@/lib/brand-migration'
 import {
@@ -91,7 +92,7 @@ export async function resolveJobPromotion(input: {
 }): Promise<{ posting: JobPosting; recommendation: JobRecommendation; closed: boolean }> {
   const intent = jobPromotionIntentSchema.parse(input.intent)
   if (input.activeDraft.id !== intent.sourceDraftId) throw new JobPromotionError('WRONG_DRAFT')
-  if (!['paste', 'upload'].includes(input.activeDraft.source)) {
+  if (!isTrustedResumeSource(input.activeDraft.source)) {
     throw new JobPromotionError('UNTRUSTED_DRAFT')
   }
   const [posting, recommendation] = await Promise.all([

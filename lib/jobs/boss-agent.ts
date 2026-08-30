@@ -1,10 +1,11 @@
-import type { IndexedDbDomainStore } from '@/lib/agent/domain-store'
+import { resumeVariantSchema, type IndexedDbDomainStore } from '@/lib/agent/domain-store'
 import type { BrowserBossJob } from './browser-agent-protocol'
 import { jdRequirementAnalysisSchema, type JDRequirementAnalysis } from '@/lib/agent/jd-report'
-import { createOptimizationRun } from '@/lib/agent/optimization-run'
+import { createOptimizationRun, transitionOptimizationRun } from '@/lib/agent/optimization-run'
 import { requirementMatrixSchema, scoreRequirementMatrix } from '@/lib/agent/requirement-matrix'
 import { scoreResumeStructure } from '@/lib/agent/resume-structure-score'
-import type { ResumeData } from '@/lib/resume-model'
+import { normalizeResumeData, type ResumeData } from '@/lib/resume-model'
+import { fingerprintOptimizationInputs } from '@/lib/agent/workflow-persistence'
 import {
   applicationRecordSchema,
   createJobInputFingerprint,
@@ -40,6 +41,7 @@ export async function upsertBossBrowserJobs(input: {
       const canonicalUrl = assertMarketplaceJobUrl('boss', job.url)
       const id = createStableJobDomainId('job-posting', ['boss', job.externalId])
       const existing = await transaction.get('jobPostings', id)
+      const description = existing?.detailFetchedAt ? existing.description : job.summary
       const posting = jobPostingSchema.parse({
         id,
         sourceId: BOSS_BROWSER_SOURCE_ID,
@@ -48,7 +50,7 @@ export async function upsertBossBrowserJobs(input: {
         applyUrl: canonicalUrl,
         title: job.title,
         company: job.company,
-        description: job.summary,
+        description,
         locale: 'zh',
         ...(job.location ? { location: job.location } : {}),
         ...(job.minimumMonthlySalary !== undefined || job.maximumMonthlySalary !== undefined ? {
@@ -61,11 +63,12 @@ export async function upsertBossBrowserJobs(input: {
         } : {}),
         firstSeenAt: existing?.firstSeenAt ?? input.now,
         lastCheckedAt: input.now,
+        ...(existing?.detailFetchedAt ? { detailFetchedAt: existing.detailFetchedAt } : {}),
         status: 'open',
         contentHash: createJobInputFingerprint({
           title: job.title,
           company: job.company,
-          summary: job.summary,
+          description,
           location: job.location,
           minimumMonthlySalary: job.minimumMonthlySalary,
           maximumMonthlySalary: job.maximumMonthlySalary
@@ -105,7 +108,7 @@ export function planBossCandidates(input: {
     if (
       !posting
       || recommendation.sourceDraftId !== input.sourceDraftId
-      || recommendation.eligibility !== 'eligible'
+      || recommendation.eligibility === 'excluded'
       || recommendation.decision === 'ignored'
       || (recommendation.preliminaryScore ?? -1) < minimumScore
       || posting.status !== 'open'
@@ -204,7 +207,14 @@ export async function persistBossCandidateAnalysis(input: {
       }
       const runId = createStableJobDomainId('optimization-run', [posting.id, application.sourceDraftId])
       const existingRun = await transaction.get('optimizationRuns', runId)
-      if (!existingRun) {
+      const analysisChanged = existingRun && (
+        existingRun.targetJobId !== analysis.targetJob.id
+        || existingRun.inputFingerprint !== analysis.matrix.inputFingerprint
+      )
+      if (analysisChanged && existingRun.stage !== 'draft') {
+        throw new TypeError('A reviewed BOSS analysis cannot be replaced by refreshed detail')
+      }
+      if (!existingRun || analysisChanged) {
         await transaction.put('optimizationRuns', createOptimizationRun({
           id: runId,
           sourceDraftId: application.sourceDraftId,
@@ -321,4 +331,205 @@ export async function analyzeBossCandidateQueue(input: {
     }
   }
   return { candidateCount: candidates.length, prepared, failures }
+}
+
+/**
+ * Creates a job-specific copy from the trusted resume without asking a model to
+ * rewrite claims. The no-op change set still travels through the deterministic
+ * optimization state machine so packet fingerprints and audit history remain
+ * compatible with manually reviewed variants.
+ */
+export async function prepareBossCandidateResumeVariants(input: {
+  store: IndexedDbDomainStore
+  sourceDraftId: string
+  resume: ResumeData
+  maximumCandidates?: number
+  now: () => string
+}) {
+  const maximumCandidates = input.maximumCandidates ?? 10
+  if (!Number.isInteger(maximumCandidates) || maximumCandidates < 1 || maximumCandidates > 50) {
+    throw new TypeError('BOSS resume variant batch size must be between 1 and 50')
+  }
+  const applications = (await input.store.listByIndex(
+    'applicationRecords',
+    'bySourceDraftId',
+    input.sourceDraftId
+  )).filter((application) => (
+    application.targetJobId
+    && !application.resumeVariantId
+    && ['saved', 'analyzing', 'preparing'].includes(application.status)
+  )).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+    .slice(0, maximumCandidates)
+
+  const prepared = [] as ApplicationRecord[]
+  for (const candidate of applications) {
+    const now = input.now()
+    let next: ApplicationRecord | null = null
+    try {
+      next = await input.store.transaction([
+      'applicationRecords', 'jobPostings', 'targetJobs', 'jobRequirements',
+      'requirementMatches', 'optimizationRuns', 'resumeVariants', 'careerFacts'
+    ], 'readwrite', async (transaction) => {
+      const application = await transaction.get('applicationRecords', candidate.id)
+      if (!application?.targetJobId || application.resumeVariantId) return null
+      const [posting, targetJob, runs, requirements, allMatches, facts] = await Promise.all([
+        transaction.get('jobPostings', application.postingId),
+        transaction.get('targetJobs', application.targetJobId),
+        transaction.listByIndex('optimizationRuns', 'bySourceDraftId', application.sourceDraftId),
+        transaction.listByIndex('jobRequirements', 'byJobId', application.targetJobId),
+        transaction.list('requirementMatches'),
+        transaction.list('careerFacts')
+      ])
+      if (
+        !posting
+        || detectMarketplaceFromJobUrl(posting.canonicalUrl) !== 'boss'
+        || !targetJob
+        || requirements.length === 0
+      ) return null
+      const targetRuns = runs.filter((item) => item.targetJobId === application.targetJobId)
+      const existingAppliedRun = targetRuns.find((item) => item.stage === 'applied')
+      if (existingAppliedRun?.appliedVariantId) {
+        const existingVariant = await transaction.get('resumeVariants', existingAppliedRun.appliedVariantId)
+        if (
+          existingVariant?.sourceDraftId === application.sourceDraftId
+          && existingVariant.targetJobId === targetJob.id
+          && existingAppliedRun.changeInputFingerprint
+        ) {
+          const relinked = applicationRecordSchema.parse({
+            ...application,
+            resumeVariantId: existingVariant.id,
+            workflowInputFingerprint: existingAppliedRun.changeInputFingerprint,
+            updatedAt: now
+          })
+          await transaction.put('applicationRecords', relinked)
+          return relinked
+        }
+      }
+      const managedRunId = createStableJobDomainId('optimization-run', [
+        posting.id,
+        application.sourceDraftId,
+        'managed-copy-v2'
+      ])
+      const existingManagedRun = targetRuns.find((item) => item.id === managedRunId)
+      if (existingManagedRun && existingManagedRun.stage !== 'draft') return null
+      const run = targetRuns.find((item) => item.stage === 'draft')
+        ?? existingManagedRun
+        ?? createOptimizationRun({
+          id: managedRunId,
+          sourceDraftId: application.sourceDraftId,
+          targetJobId: targetJob.id,
+          inputFingerprint: requirements[0].jobId === targetJob.id
+            ? targetRuns[0]?.inputFingerprint ?? createJobInputFingerprint({
+                targetJobId: targetJob.id,
+                requirements: requirements.map(({ id }) => id)
+              })
+            : createJobInputFingerprint(targetJob.id),
+          now
+        })
+      const requirementIds = new Set(requirements.map(({ id }) => id))
+      const existingMatches = new Map(
+        allMatches
+          .filter((match) => requirementIds.has(match.requirementId))
+          .map((match) => [match.requirementId, match])
+      )
+      const matches = requirements.map((requirement) => existingMatches.get(requirement.id) ?? ({
+        requirementId: requirement.id,
+        factIds: [],
+        status: 'gap' as const,
+        rationale: targetJob.locale === 'zh'
+          ? '托管副本不新增或改写职业事实；未关联要求保持为证据缺口。'
+          : 'Managed copies do not add or rewrite career facts; unmatched requirements remain evidence gaps.'
+      }))
+      const matrix = requirementMatrixSchema.parse({
+        version: 1,
+        targetJobId: targetJob.id,
+        inputFingerprint: run.inputFingerprint,
+        requirements,
+        matches
+      })
+      const score = scoreRequirementMatrix(matrix)
+      const currentFingerprint = fingerprintOptimizationInputs({
+        sourceDraftId: application.sourceDraftId,
+        resume: input.resume,
+        targetJob,
+        requirements,
+        requirementMatches: matches,
+        careerFacts: facts
+      })
+      const variantId = createStableJobDomainId('resume-variant', [application.id, targetJob.id])
+      const variant = resumeVariantSchema.parse({
+        id: variantId,
+        sourceDraftId: application.sourceDraftId,
+        targetJobId: targetJob.id,
+        name: `${targetJob.title}${targetJob.company ? ` · ${targetJob.company}` : ''}`,
+        data: normalizeResumeData({
+          ...structuredClone(input.resume),
+          targetRole: targetJob.title
+        }, {
+          source: input.resume.metadata.source,
+          locale: input.resume.metadata.locale,
+          now
+        }),
+        createdAt: now,
+        updatedAt: now
+      })
+
+      let appliedRun = transitionOptimizationRun(run, { type: 'requirements-ready' }, now)
+      appliedRun = transitionOptimizationRun(appliedRun, {
+        type: 'map-evidence',
+        requirementMatches: matches,
+        questions: [],
+        scoreBefore: score
+      }, now)
+      appliedRun = transitionOptimizationRun(appliedRun, {
+        type: 'prepare-plan',
+        plan: {
+          id: createStableJobDomainId('optimization-plan', [run.id, 'preserve']),
+          summary: 'Create a job-specific copy from the trusted resume without AI-authored rewrites.',
+          items: [{
+            id: createStableJobDomainId('optimization-plan-item', [run.id, requirements[0].id]),
+            requirementIds: [requirements[0].id],
+            factIds: [],
+            targetPath: 'projects',
+            intent: 'Preserve all existing resume claims and structure in an independent job-specific copy.',
+            transformation: 'reorder'
+          }]
+        }
+      }, now)
+      appliedRun = transitionOptimizationRun(appliedRun, { type: 'request-plan-approval' }, now)
+      appliedRun = transitionOptimizationRun(appliedRun, { type: 'approve-plan' }, now)
+      appliedRun = transitionOptimizationRun(appliedRun, {
+        type: 'propose-changes',
+        changeSet: {
+          summary: 'No resume claims were rewritten; the trusted resume was copied for this role.',
+          changes: [],
+          questions: []
+        },
+        currentFingerprint
+      }, now)
+      appliedRun = transitionOptimizationRun(appliedRun, { type: 'approve-changes', acceptedChangeIds: [] }, now)
+      appliedRun = transitionOptimizationRun(appliedRun, {
+        type: 'apply',
+        currentFingerprint,
+        appliedVariantId: variant.id,
+        scoreAfter: score
+      }, now)
+      const updatedApplication = applicationRecordSchema.parse({
+        ...application,
+        resumeVariantId: variant.id,
+        workflowInputFingerprint: currentFingerprint,
+        updatedAt: now
+      })
+      await transaction.put('resumeVariants', variant)
+      await transaction.put('optimizationRuns', appliedRun)
+      await transaction.put('applicationRecords', updatedApplication)
+      return updatedApplication
+      })
+    } catch {
+      // One stale legacy workflow must not block independent candidates.
+      continue
+    }
+    if (next) prepared.push(next)
+  }
+  return prepared
 }

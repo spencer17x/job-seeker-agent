@@ -37,6 +37,7 @@ async function createTrustedDraft(page: Page) {
 
 test('uses the Job Agent backend as the localized product root', async ({ page }) => {
   await page.goto('/zh')
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
   await expect(page).toHaveURL(/\/zh\/jobs$/u)
   await expect(page.getByRole('application', { name: '求职 Agent' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '求职概览', level: 1 })).toBeVisible()
@@ -44,6 +45,21 @@ test('uses the Job Agent backend as the localized product root', async ({ page }
   await expect(page.getByRole('link', { name: '开始设置' })).toBeVisible()
   await expect(page.getByRole('button', { name: '暂停' })).toHaveCount(0)
   await expect(page.locator('.desktop-shell, .mobile-home, .desktop-dock')).toHaveCount(0)
+  const workspaceTheme = await page.locator('.job-workspace').evaluate((element) => {
+    const style = getComputedStyle(element)
+    return {
+      boundary: element.getAttribute('data-ui-theme'),
+      background: style.backgroundColor,
+      color: style.color,
+      surface: style.getPropertyValue('--jw-surface').trim()
+    }
+  })
+  expect(workspaceTheme).toEqual({
+    boundary: 'light',
+    background: 'rgb(248, 250, 252)',
+    color: 'rgb(15, 23, 42)',
+    surface: '#fff'
+  })
 })
 
 test('exposes only BOSS Zhipin', async ({ page }, testInfo) => {
@@ -127,7 +143,7 @@ test('switches backend sections without an RSC navigation request', async ({ pag
   expect(requests.filter((url) => url.includes('_rsc=') || url.includes('.rsc'))).toEqual([])
 })
 
-test('collects a job goal before resume upload and does not run before setup', async ({ page }, testInfo) => {
+test('collects a job goal before trusted resume import and does not run before setup', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'Desktop first-run setup coverage')
   await page.goto('/en/jobs')
   await page.getByRole('link', { name: 'Start setup' }).click()
@@ -136,7 +152,7 @@ test('collects a job goal before resume upload and does not run before setup', a
   await expect(page.getByRole('heading', { name: 'Describe the job you want' })).toBeVisible()
   await page.getByRole('textbox', { name: 'My job-search goal' }).fill('Platform engineering roles in Shanghai')
   await page.getByRole('button', { name: 'Let Agent analyze goal' }).click()
-  await expect(page.getByRole('heading', { name: 'Upload a trusted resume' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Import a trusted resume' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Continue to analysis' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Pause' })).toHaveCount(0)
 })
@@ -156,6 +172,89 @@ test('derives a resume search for BOSS Zhipin', async ({ page }, testInfo) => {
   await radar.getByRole('button', { name: 'Run Agent now' }).click()
   await expect(radar.getByText('The selected platforms require official search or partner access. Open their official searches below.')).toBeVisible()
   expect(discoveryRequests).toBe(0)
+})
+
+test('starts screening and queues matching applications immediately after Agent configuration', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'Desktop configured-start workflow')
+  await createTrustedDraft(page)
+  await page.route('**/api/jd-match', async (route) => json(route, {
+    sections: {
+      jobTitle: 'Platform Engineer',
+      company: 'Example Systems',
+      requirements: [{
+        text: 'Build reliable TypeScript platforms.',
+        category: 'experience',
+        priority: 'must',
+        weight: 5,
+        keywords: ['TypeScript', 'platform']
+      }],
+      resumeEmphasis: ['Use verified platform evidence.'],
+      interviewPrep: ['Prepare a reliability example.']
+    }
+  }))
+  await page.addInitScript(() => {
+    const target = window as unknown as { __jobAgentQueries: string[] }
+    target.__jobAgentQueries = []
+    window.addEventListener('job-seeker-agent:browser-agent:request', (event) => {
+      const request = (event as CustomEvent<{
+        requestId: string
+        action: string
+        payload?: { query?: string }
+      }>).detail
+      if (request.action === 'search-boss-jobs' && request.payload?.query) {
+        target.__jobAgentQueries.push(request.payload.query)
+      }
+      window.dispatchEvent(new CustomEvent('job-seeker-agent:browser-agent:response', { detail: {
+        requestId: request.requestId,
+        ok: true,
+        ...(request.action === 'detect-platforms'
+          ? { sessions: [{ platform: 'boss', state: 'available' }] }
+          : request.action === 'search-boss-jobs'
+            ? { jobs: [{
+                externalId: 'boss-platform-1',
+                url: 'https://www.zhipin.com/job_detail/boss-platform-1.html',
+                title: 'Platform Engineer',
+                company: 'Example Systems',
+                summary: 'Build reliable TypeScript platforms in Shanghai.',
+                location: 'Shanghai',
+                minimumMonthlySalary: 30_000,
+                maximumMonthlySalary: 45_000
+              }] }
+          : request.action === 'collect-boss-conversation-signals'
+            ? { conversationSignals: [] }
+            : request.action === 'diagnose-boss-adapter'
+              ? { diagnostics: [] }
+              : { jobs: [] })
+      } }))
+    })
+  })
+
+  await page.goto('/en/jobs/setup')
+  const setup = page.getByRole('application', { name: 'Job Agent' })
+  await setup.getByRole('textbox', { name: 'My job-search goal' }).fill('Platform Engineer roles in Shanghai')
+  await setup.getByRole('button', { name: 'Let Agent analyze goal' }).click()
+  await setup.getByRole('button', { name: 'Continue to analysis' }).click()
+  await setup.getByRole('button', { name: 'Confirm and choose job criteria' }).click()
+  await setup.getByRole('button', { name: 'Save job criteria' }).click()
+  await setup.getByRole('button', { name: 'Start Agent' }).click()
+
+  await expect(page).toHaveURL(/\/en\/jobs\/opportunities$/u)
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __jobAgentQueries: string[] }
+  ).__jobAgentQueries)).toContain('Platform Engineer')
+  await expect(setup.getByText('Created independent resume copies for 1 BOSS role(s) and queued verified outreach.')).toBeVisible()
+  await expect(setup.getByText('Example Systems').first()).toBeVisible()
+  await expect.poll(async () => (await readDomainRecords<{ status: string; targetJobId?: string; resumeVariantId?: string }>(
+    page,
+    'applicationRecords'
+  ))[0]).toMatchObject({
+    status: 'ready-to-apply',
+    targetJobId: expect.any(String),
+    resumeVariantId: expect.any(String)
+  })
+  await expect.poll(() => page.evaluate(() => JSON.parse(
+    localStorage.getItem('job-seeker-agent:job-agent-preferences:v1') ?? '{}'
+  ))).toMatchObject({ version: 2, enabled: true, autonomy: 'autopilot', autoSendResume: true })
 })
 
 test('brings a user-selected platform job into Target Job without fetching the page', async ({ page }, testInfo) => {
@@ -203,3 +302,23 @@ test('keeps the bilingual Job Agent route usable without horizontal overflow on 
   await expect(page.getByText('请先导入或粘贴可信简历，再进行岗位匹配。')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0)
 })
+
+async function readDomainRecords<T = unknown>(page: Page, storeName: string) {
+  return page.evaluate(async (name) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('resume-os-domain')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    try {
+      const transaction = database.transaction(name, 'readonly')
+      return await new Promise<unknown[]>((resolve, reject) => {
+        const request = transaction.objectStore(name).getAll()
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+    } finally {
+      database.close()
+    }
+  }, storeName) as Promise<T[]>
+}

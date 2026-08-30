@@ -453,6 +453,27 @@ export function JDMatchApp({
     }
   }
 
+  async function retryPromotionLink() {
+    const preference = reportState?.workflowPreference
+    if (!promotion || !preference || workflowSaving) return
+    setWorkflowSaving(true)
+    setPersistenceMessage('')
+    try {
+      await promotionCompletion({
+        intent: promotion.intent,
+        targetJobId: preference.targetJobId,
+        now: new Date().toISOString()
+      })
+      clearJobPromotionIntent()
+      setPromotion(null)
+      setPersistenceMessage(t('savedPromotedWorkflow'))
+    } catch {
+      setPersistenceMessage(t('promotionLinkFailed'))
+    } finally {
+      setWorkflowSaving(false)
+    }
+  }
+
   const labels = t.raw('sections') as string[]
   const guidance = visibleReport ? [
     { title: labels[4], content: visibleReport.resumeEmphasis },
@@ -485,6 +506,7 @@ export function JDMatchApp({
             <p>{promotion.closed
               ? t('promotionClosed')
               : t('promotionLoaded', { title: promotion.posting.title, company: promotion.posting.company })}</p>
+            {reportState?.workflowPreference ? <button type="button" disabled={workflowSaving} onClick={() => void retryPromotionLink()}>{t('promotionRetry')}</button> : null}
           </div>
         </aside> : null}
         <label htmlFor="jd-match-input">{t('jobDescription')}</label>

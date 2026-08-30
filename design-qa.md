@@ -1,63 +1,43 @@
-# Job Agent Design QA
+# Job Agent theme design QA
 
-- Source visual truth: `/Users/17a/.codex/generated_images/01a01885-484d-7582-a998-b22be112050f/exec-f091fb46-3ce7-46b2-bad4-a93b36947330.png`
-- Implementation screenshot: `/Users/17a/projects/job-seeker-agent/design-implementation-final-v3.png`
-- Full comparison: `/Users/17a/projects/job-seeker-agent/design-comparison-final-v3.png`
-- Focused top comparison: `/Users/17a/projects/job-seeker-agent/design-comparison-focus-top-v3.png`
-- Implementation route: `http://127.0.0.1:3001/zh/jobs`
-- State: light theme, empty local job workspace, Browser Agent disconnected
-- CSS viewport: `1280 × 720`, reported device pixel ratio `2`
-- Implementation pixels: `1280 × 720` (the in-app browser normalizes its screenshot to CSS-pixel dimensions)
-- Source pixels: `1487 × 1058`; normalized by cropping the top `1487 × 836` region and scaling to `1280 × 720` for equal above-the-fold comparison
+- Source visual truth: `/var/folders/hl/d5hg44c53b958y88jbqlwdw00000gn/T/codex-clipboard-39d3385c-9e18-4c68-be19-2bad4346d3a6.png`
+- Browser-rendered implementation: `/tmp/job-agent-theme-implementation.png`
+- Side-by-side comparison: `/tmp/job-agent-theme-comparison.png`
+- Viewport: 1440 × 634 CSS px in the user-selected Chrome browser
+- Source pixels: 2880 × 1622; normalized from the application viewport to 1440 × 634 for comparison
+- Implementation pixels: 1440 × 634; browser-reported device pixel ratio 2, normalized by the browser capture
+- State: Chinese Job Agent overview, Agent running, BOSS connected. The document root was still set to dark while the Job Agent light-theme boundary was verified.
 
 ## Full-view comparison evidence
 
-The implementation preserves the selected design's persistent left navigation, slim top bar, single Agent status action, two-column activity/task region, and horizontally divided application progress. The information hierarchy, primary blue action, white/off-white surface balance, and low-elevation treatment match the source direction.
+The left side of `/tmp/job-agent-theme-comparison.png` is the reported mixed-theme state; the right side is the revised implementation. The sidebar and top bar remain visually stable while the overview background, Agent card, runtime metrics, activity list, task list, dividers, buttons, and text now use the same light neutral and blue-accent system.
 
-The source contains populated demonstration data while the implementation capture uses a clean browser workspace with no imported resume or jobs. Counts, timestamps, connection color, and candidate name therefore differ intentionally; the layout reserves the same regions and renders live data when available.
+## Focused region comparison
 
-## Focused-region comparison evidence
-
-The focused comparison covers the product mark, sidebar selection, page title, BOSS connection state, Agent status, pause control, and primary task action. Sidebar width, selected-navigation treatment, control sizing, border radius, and top alignment are materially aligned. A separate focused crop was useful because these controls are too small to judge reliably in the full-width comparison.
-
-## Findings
-
-No actionable P0, P1, or P2 visual differences remain.
-
-- [P3] Empty-state activity timestamps use an em dash instead of fabricated times.
-  - Location: Overview activity list.
-  - Evidence: the source uses populated example times; the implementation has no stored activity timestamps.
-  - Rationale: this is an intentional data-integrity choice and does not alter layout or interaction.
-
-- [P3] The captured connection indicator is gray instead of green.
-  - Location: top bar and Agent status.
-  - Evidence: the in-app browser does not have the JobSeeker Agent Chrome extension, while the source depicts a connected BOSS session.
-  - Rationale: the implementation changes to green from real Browser Agent state.
+A separate crop was not needed. The reported defect affects the two largest content regions, and both their foreground/background contrast and their boundaries are clearly visible in the normalized full-view comparison. The screen contains no raster product assets whose crop or fidelity requires a separate close-up.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: system Chinese sans-serif, 14–16px product text, clear 17–20px headings, restrained weights, no clipping or unintended wrapping.
-- Spacing and layout rhythm: 220px sidebar, aligned 16/20/28px spacing, one status surface, two-column work region, and simple progress dividers match the selected composition.
-- Colors and visual tokens: white/off-white base, charcoal text, muted blue primary, soft semantic colors, and subtle gray lines are consistent with the source.
-- Image quality and assets: the target contains no raster imagery. Standard interface icons use the existing Lucide library; no placeholder or handcrafted image assets were introduced.
-- Copy and content: route names, Agent state, task labels, BOSS status, and progress labels match the approved Chinese information architecture. Empty-state counts remain truthful.
-
-## Interaction and runtime verification
-
-- Navigated from Overview to Opportunities and Job Preferences; URLs and active navigation updated correctly.
-- Verified Pause changes the Agent state to paused and Resume restores it.
-- Verified primary routes render through the standalone Job Agent shell.
-- Checked a fresh in-app browser tab for console errors: none.
-- Relevant desktop and mobile component tests pass before final full-suite verification.
+- Fonts and typography: existing Chinese system font stack, weights, wrapping, and hierarchy are preserved. Primary and muted text now render against light surfaces with clear contrast.
+- Spacing and layout rhythm: the existing shell proportions are preserved. Content now uses a 24 px page inset, 20 px section rhythm, 12 px card radii, and subtle card elevation consistently.
+- Colors and visual tokens: Job Agent now owns an explicit light token boundary (`slate-50` canvas, white surfaces, `slate-900` foreground, `slate-500` muted text, blue primary, emerald success). A global dark preference no longer leaks into this workspace.
+- Image quality and asset fidelity: no raster or custom decorative image assets are present. Existing Lucide interface icons remain sharp and consistent.
+- Copy and content: labels and live Agent data are unchanged. Count and timestamp differences from the source are expected live-data changes, not design drift.
 
 ## Comparison history
 
-1. V1 exposed the old 218px proportions and compressed activity area. Fixed sidebar width, column ratio, and vertical rhythm.
-2. V2 added the fourth activity row and expanded the main work region. Fixed top-bar/sidebar alignment and added a functional pause action.
-3. Final normalized comparison aligned the 1280 × 720 implementation with an equally cropped and scaled source, then tightened the top-bar, sidebar, timeline, and pause interaction. No P0/P1/P2 issues remained.
+1. Earlier P1: the light sidebar/top bar surrounded a dark overview whose inherited foreground color made headings and values nearly unreadable.
+2. Fix: removed the legacy dark workspace override, added an explicit Job Agent light-theme boundary for both `--jw-*` and embedded `--theme-*` tokens, and aligned card/background/button styling with the Tailwind/shadcn shell.
+3. Post-fix evidence: Chrome computed styles report `rgb(248, 250, 252)` for the workspace background, `#fff` for surfaces, and `rgb(15, 23, 42)` for foreground text even while `documentElement.dataset.theme` is `dark`. Setup, opportunities, resumes, conversations, applications, interviews, and preferences were also checked in Chrome.
 
-## Follow-up polish
+## Findings
 
-- Re-capture the same overview after importing a trusted resume and connecting the Chrome extension to compare populated data states.
+No actionable P0, P1, or P2 visual differences remain for the requested theme-consistency fix.
+
+## Interaction and runtime checks
+
+- Sidebar navigation was exercised from Overview to Opportunities and back.
+- All seven workspace sections plus setup/preferences rendered with the light boundary.
+- Chrome reported no application console errors. Warnings observed came from an unrelated installed wallet extension.
 
 final result: passed

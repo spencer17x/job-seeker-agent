@@ -67,6 +67,7 @@ describe('ThemePreferenceProvider', () => {
 
   it('reacts to OS color scheme changes only while system mode is selected', async () => {
     render(<ThemePreferenceProvider><Probe /></ThemePreferenceProvider>)
+    fireEvent.click(screen.getByRole('button', { name: 'System' }))
     await waitFor(() => expect(screen.getByTestId('mode')).toHaveTextContent('system'))
 
     act(() => setSystemDark(true))

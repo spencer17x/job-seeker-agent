@@ -193,13 +193,26 @@ describe('application records', () => {
     expect(applied).toMatchObject({ status: 'applied', submittedAt: later })
   })
 
-  it('invalidates packet readiness when the posting changes without deleting history', async () => {
+  it('rebinds stale metadata fingerprints only when the reviewed job content is unchanged', async () => {
     const { store, posting, application } = await readyHarness()
     await store.put('jobPostings', { ...posting, contentHash: 'hash:changed' })
+    const prepared = await prepareApplicationPacket({ store, recordId: application.id, resume, now: later })
+    expect(prepared.ready).toBe(true)
+    expect(prepared.record).toMatchObject({ status: 'ready-to-apply', postingContentHash: 'hash:changed' })
+  })
+
+  it('invalidates packet readiness when reviewed job content actually changes', async () => {
+    const { store, posting, application } = await readyHarness()
+    await store.put('jobPostings', {
+      ...posting,
+      description: 'Build a materially different payments platform.',
+      contentHash: 'hash:material-change'
+    })
     const packet = await loadApplicationPacket({ store, recordId: application.id, resume })
     expect(packet.ready).toBe(false)
     expect(packet.checks.find((check) => check.code === 'posting-current')?.passed).toBe(false)
-    await expect(prepareApplicationPacket({ store, recordId: application.id, resume, now: later })).rejects.toMatchObject({ code: 'PACKET_NOT_READY' })
+    await expect(prepareApplicationPacket({ store, recordId: application.id, resume, now: later }))
+      .rejects.toMatchObject({ code: 'PACKET_NOT_READY' })
     expect(await store.get('applicationRecords', application.id)).toMatchObject({ status: 'preparing' })
   })
 })

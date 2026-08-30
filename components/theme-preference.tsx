@@ -31,7 +31,7 @@ const MEDIA_QUERY = '(prefers-color-scheme: dark)'
 const MODES: readonly ThemeMode[] = ['system', 'light', 'dark']
 const icons = { system: Monitor, light: Sun, dark: Moon }
 const ThemePreferenceContext = createContext<ThemePreference | null>(null)
-let memoryMode: ThemeMode = 'system'
+let memoryMode: ThemeMode = 'light'
 
 function isThemeMode(value: unknown): value is ThemeMode {
   return value === 'system' || value === 'light' || value === 'dark'
@@ -40,7 +40,7 @@ function isThemeMode(value: unknown): value is ThemeMode {
 function readMode(): ThemeMode {
   try {
     const value = readMigratedStorageValue(window.localStorage, STORAGE_KEY, LEGACY_STORAGE_KEY)
-    memoryMode = isThemeMode(value) ? value : 'system'
+    memoryMode = isThemeMode(value) ? value : 'light'
     return memoryMode
   } catch {
     return memoryMode
@@ -91,7 +91,7 @@ function readSystemDark() {
 }
 
 export function ThemePreferenceProvider({ children }: { children: ReactNode }) {
-  const mode = useSyncExternalStore<ThemeMode>(subscribeMode, readMode, () => 'system')
+  const mode = useSyncExternalStore<ThemeMode>(subscribeMode, readMode, () => 'light')
   const systemDark = useSyncExternalStore<boolean>(subscribeSystemTheme, readSystemDark, () => true)
   const resolvedTheme: ResolvedTheme = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 

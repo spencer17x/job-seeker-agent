@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createJobInputFingerprint } from '@/lib/jobs/job-domain'
 
 describe('BOSS page send adapter', () => {
@@ -65,6 +65,184 @@ describe('BOSS page send adapter', () => {
       externalId: 'job-1',
       description: expect.stringContaining('TypeScript 全栈研发')
     }))
+  })
+
+  it('opens a unique recruiter conversation only after the BOSS job identity matches', async () => {
+    document.body.innerHTML = '<button type="button">立即沟通</button>'
+    Object.defineProperty(document.body, 'innerText', {
+      configurable: true,
+      value: '平台工程师 示例公司 职位描述 负责 TypeScript 平台研发'
+    })
+    const click = vi.spyOn(document.querySelector('button')!, 'click')
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('https://www.zhipin.com/job_detail/job-1.html'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout, clearTimeout
+    })
+    const accepted = await new Promise<{ opened: boolean }>((resolve) => {
+      listener?.({
+        action: 'open-boss-conversation',
+        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师', company: '示例公司' }
+      }, {}, (value) => resolve(value as { opened: boolean }))
+    })
+    expect(accepted).toEqual({ opened: true })
+    expect(click).toHaveBeenCalledOnce()
+    const redactedCompany = await new Promise<{ opened: boolean }>((resolve) => {
+      listener?.({
+        action: 'open-boss-conversation',
+        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师', company: '某大型互联网公司' }
+      }, {}, (value) => resolve(value as { opened: boolean }))
+    })
+    expect(redactedCompany).toEqual({ opened: true })
+    expect(click).toHaveBeenCalledTimes(2)
+    const rejected = await new Promise<{ opened: boolean }>((resolve) => {
+      listener?.({
+        action: 'open-boss-conversation',
+        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '数据分析师', company: '示例公司' }
+      }, {}, (value) => resolve(value as { opened: boolean }))
+    })
+    expect(rejected).toEqual({ opened: false })
+    expect(click).toHaveBeenCalledTimes(2)
+  })
+
+  it('returns user attention instead of clicking through a BOSS CAPTCHA', async () => {
+    document.body.innerHTML = '<button type="button">立即沟通</button>'
+    Object.defineProperty(document.body, 'innerText', {
+      configurable: true,
+      value: '平台工程师 示例公司 请完成滑块验证'
+    })
+    const click = vi.spyOn(document.querySelector('button')!, 'click')
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('https://www.zhipin.com/job_detail/job-1.html'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout, clearTimeout
+    })
+    const response = await new Promise<{ opened: boolean; attention?: string }>((resolve) => {
+      listener?.({
+        action: 'open-boss-conversation',
+        payload: { url: 'https://www.zhipin.com/job_detail/job-1.html', title: '平台工程师', company: '示例公司' }
+      }, {}, (value) => resolve(value as { opened: boolean; attention?: string }))
+    })
+    expect(response).toEqual({ opened: false, attention: 'captcha-required' })
+    expect(click).not.toHaveBeenCalled()
+  })
+
+  it('prefers the explicit job-description section over a longer company introduction', async () => {
+    document.body.innerHTML = `<section class="job-sec"><h3>职位描 述</h3><div class="job-sec-text">负责 TypeScript、React 与 RAG Agent 平台开发，并承担工具调用、质量验证和稳定性建设。</div></section><section class="job-sec"><h3>公司介绍</h3><div class="job-sec-text">这是一段明显更长的公司介绍，包含大量业务、品牌、城市、用户和行业背景，但不应被当成岗位职责。${'公司背景'.repeat(30)}</div></section>`
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('https://www.zhipin.com/job_detail/job-2.html'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout, clearTimeout
+    })
+    const response = await new Promise<{ jobDetail: { description: string } | null }>((resolve) => {
+      listener?.({ action: 'collect-boss-job-detail' }, {}, (value) => resolve((value as { jobDetail: { description: string } | null })))
+    })
+    expect(response.jobDetail?.description).toContain('TypeScript、React 与 RAG')
+    expect(response.jobDetail?.description).not.toContain('大量业务')
+  })
+
+  it('extracts a job description rendered inside an open shadow root', async () => {
+    document.body.innerHTML = `<section class="job-sec-text">公司介绍：${'企业背景'.repeat(40)}</section><div id="job-shell"></div>`
+    const shadow = document.querySelector('#job-shell')!.attachShadow({ mode: 'open' })
+    shadow.innerHTML = `<h3>职位描 述</h3><div>岗位职责：开发 Agent Workflow。任职要求：熟悉 TypeScript 与 Kubernetes。</div><h3>招聘者</h3>`
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('https://www.zhipin.com/job_detail/job-shadow.html'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout, clearTimeout
+    })
+    const response = await new Promise<{ jobDetail: { description: string } | null }>((resolve) => {
+      listener?.({ action: 'collect-boss-job-detail' }, {}, (value) => resolve(value as { jobDetail: { description: string } | null }))
+    })
+    expect(response.jobDetail?.description).toContain('Agent Workflow')
+    expect(response.jobDetail?.description).not.toContain('企业背景')
+  })
+
+  it('uses only a validated background-supplied job URL inside an about:blank child frame', async () => {
+    document.body.innerHTML = `<div id="child-job"></div>`
+    const shadow = document.querySelector('#child-job')!.attachShadow({ mode: 'open' })
+    shadow.innerHTML = `<h3>职位描述</h3><div>岗位职责：维护 Agent Workflow。任职要求：熟悉 TypeScript。</div><h2>招聘者</h2>`
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('about:blank'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout, clearTimeout
+    })
+    const response = await new Promise<{ jobDetail: { description: string } | null }>((resolve) => {
+      listener?.({ action: 'collect-boss-job-detail', payload: { url: 'https://www.zhipin.com/job_detail/job-child.html' } }, {}, (value) => resolve(value as { jobDetail: { description: string } | null }))
+    })
+    expect(response.jobDetail?.description).toContain('Agent Workflow')
+    const rejected = await new Promise<{ jobDetail: unknown }>((resolve) => {
+      listener?.({ action: 'collect-boss-job-detail', payload: { url: 'https://evil.example/job_detail/job-child.html' } }, {}, (value) => resolve(value as { jobDetail: unknown }))
+    })
+    expect(rejected.jobDetail).toBeNull()
+  })
+
+  it('extracts the rendered text boundary when BOSS hides detail inside a closed tree', async () => {
+    document.body.innerHTML = `<section class="job-sec-text">公司介绍：错误候选</section>`
+    Object.defineProperty(document.body, 'innerText', {
+      configurable: true,
+      value: `AI Agent工程师\n职位描 述\n岗位职责\n1. 开发 Agent Workflow\n任职要求\n1. 熟悉 TypeScript\nBOSS 安全提示\n请注意招聘安全\n公司介绍\n大量企业背景`
+    })
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('https://www.zhipin.com/job_detail/job-rendered.html'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout, clearTimeout
+    })
+    const response = await new Promise<{ jobDetail: { description: string } | null }>((resolve) => {
+      listener?.({ action: 'collect-boss-job-detail' }, {}, (value) => resolve(value as { jobDetail: { description: string } | null }))
+    })
+    expect(response.jobDetail?.description).toContain('开发 Agent Workflow')
+    expect(response.jobDetail?.description).toContain('熟悉 TypeScript')
+    expect(response.jobDetail?.description).not.toContain('大量企业背景')
+  })
+
+  it('collects bounded visible resume text only from the fixed BOSS resume page', async () => {
+    document.body.innerHTML = `<main class="resume-content"><h2>个人优势</h2><p>负责 TypeScript AI Agent 产品开发。</p><h2>工作经历</h2><p>示例公司 · AI 全栈工程师 · 2023-至今</p><h2>项目经历</h2><p>构建 RAG 质量评估平台。</p></main>`
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = {
+      runtime: {
+        onMessage: { addListener: (value: typeof listener) => { listener = value } },
+        sendMessage: async () => undefined
+      }
+    }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('https://www.zhipin.com/web/geek/resume'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout, clearTimeout
+    })
+    const response = await new Promise<{ resumeSnapshot: Record<string, unknown> | null }>((resolve) => {
+      listener?.({ action: 'collect-boss-resume' }, {}, (value) => resolve(value as { resumeSnapshot: Record<string, unknown> | null }))
+    })
+    expect(response.resumeSnapshot).toEqual(expect.objectContaining({
+      sourceUrl: 'https://www.zhipin.com/web/geek/resume',
+      text: expect.stringContaining('RAG 质量评估平台')
+    }))
+  })
+
+  it('refuses resume extraction outside the fixed BOSS resume path', async () => {
+    document.body.innerHTML = `<main class="resume-content"><h2>工作经历</h2><p>不应从岗位页面读取为用户简历的内容。</p></main>`
+    let listener: ((message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined
+    const chrome = { runtime: { onMessage: { addListener: (value: typeof listener) => { listener = value } }, sendMessage: async () => undefined } }
+    runInNewContext(readFileSync('browser-extension/platform-probe.js', 'utf8'), {
+      chrome, document, location: new URL('https://www.zhipin.com/web/geek/job'), URL,
+      Element, HTMLTextAreaElement, HTMLInputElement, InputEvent, Event, TextEncoder, BigInt, Date, Promise,
+      setTimeout, clearTimeout
+    })
+    const response = await new Promise<{ resumeSnapshot: Record<string, unknown> | null }>((resolve) => {
+      listener?.({ action: 'collect-boss-resume' }, {}, (value) => resolve(value as { resumeSnapshot: Record<string, unknown> | null }))
+    })
+    expect(response.resumeSnapshot).toBeNull()
   })
 
   it('refuses to verify a conversation when BOSS exposes only display text', async () => {

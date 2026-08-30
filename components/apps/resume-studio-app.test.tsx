@@ -27,6 +27,7 @@ import {
   saveAiProviderPreference
 } from '@/lib/agent/provider-preference'
 import type { ResumeData } from '@/lib/resume-model'
+import { BROWSER_AGENT_REQUEST_EVENT, BROWSER_AGENT_RESPONSE_EVENT } from '@/lib/jobs/browser-agent-protocol'
 import { ResumeStudioApp } from './resume-studio-app'
 
 const fetchMock = vi.fn<typeof fetch>()
@@ -272,6 +273,42 @@ describe('ResumeStudioApp', () => {
     expect(within(preview).getByText(/Example Co/)).toBeVisible()
     expect(within(preview).getByRole('heading', { name: 'Projects' })).toBeVisible()
     expect(preview.querySelector('pre')).not.toBeInTheDocument()
+  })
+
+  it('reviews and imports a bounded BOSS resume into local Career Evidence', async () => {
+    const user = userEvent.setup()
+    const imported = resume('Boss Ada', 'AI Agent Engineer', 'boss')
+    const evidenceService = memoryEvidenceService()
+    const importSpy = vi.spyOn(evidenceService, 'importResume')
+    const respond = (event: Event) => {
+      const request = (event as CustomEvent<{ requestId: string; action: string }>).detail
+      if (request.action !== 'collect-boss-resume') return
+      window.dispatchEvent(new CustomEvent(BROWSER_AGENT_RESPONSE_EVENT, { detail: {
+        requestId: request.requestId,
+        ok: true,
+        resumeSnapshot: {
+          sourceUrl: 'https://www.zhipin.com/web/geek/resume',
+          text: '个人优势 TypeScript AI Agent 产品研发。工作经历 Example Co AI Agent Engineer。',
+          collectedAt: '2026-08-29T08:00:00.000Z'
+        }
+      } }))
+    }
+    window.addEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: imported, model: 'test-model' }))
+    try {
+      renderStudio('en', evidenceService)
+      await user.click(screen.getByRole('tab', { name: 'Import from BOSS' }))
+      await user.click(screen.getByRole('button', { name: 'Read from BOSS' }))
+      expect(await screen.findByRole('textbox', { name: 'BOSS resume preview' })).toHaveValue('个人优势 TypeScript AI Agent 产品研发。工作经历 Example Co AI Agent Engineer。')
+      await user.click(screen.getByRole('button', { name: 'Confirm and import' }))
+      expect(await screen.findByRole('heading', { name: 'Boss Ada' })).toBeVisible()
+      expect(importSpy).toHaveBeenCalledWith(expect.objectContaining({
+        label: 'BOSS online resume',
+        data: expect.objectContaining({ metadata: expect.objectContaining({ source: 'boss' }) })
+      }))
+    } finally {
+      window.removeEventListener(BROWSER_AGENT_REQUEST_EVENT, respond)
+    }
   })
 
   it('imports real resume facts into the local review panel and supports confirm and delete', async () => {
@@ -715,14 +752,15 @@ describe('ResumeStudioApp', () => {
     const user = userEvent.setup()
     renderStudio()
 
+    const boss = screen.getByRole('tab', { name: 'Import from BOSS' })
     const paste = screen.getByRole('tab', { name: 'Paste' })
     const upload = screen.getByRole('tab', { name: 'Upload' })
     const generate = screen.getByRole('tab', { name: 'Demo / Sandbox' })
     expect(paste).toHaveAttribute('tabindex', '0')
     expect(upload).toHaveAttribute('tabindex', '-1')
     expect(paste).toHaveAttribute('aria-controls')
-    expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(3)
-    for (const tab of [paste, upload, generate]) {
+    expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(4)
+    for (const tab of [boss, paste, upload, generate]) {
       expect(document.getElementById(tab.getAttribute('aria-controls') ?? '')).toHaveAttribute('role', 'tabpanel')
     }
     expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', paste.id)
@@ -736,7 +774,7 @@ describe('ResumeStudioApp', () => {
     await user.keyboard('{End}')
     expect(generate).toHaveFocus()
     await user.keyboard('{Home}')
-    expect(paste).toHaveFocus()
+    expect(boss).toHaveFocus()
     await user.keyboard('{ArrowLeft}')
     expect(generate).toHaveFocus()
   })

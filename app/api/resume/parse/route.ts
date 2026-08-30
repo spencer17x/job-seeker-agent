@@ -12,7 +12,7 @@ const MAX_PARSE_BODY_BYTES = 128_000
 const parseResumeRequestSchema = z.object({
   text: z.string().trim().min(1).max(MAX_PARSE_TEXT_CHARS),
   locale: resumeLocaleSchema,
-  source: z.enum(['upload', 'paste']).default('paste')
+  source: z.enum(['upload', 'paste', 'boss']).default('paste')
 }).strict()
 
 export function createResumeParseRoute(dependencies: {

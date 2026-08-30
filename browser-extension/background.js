@@ -64,6 +64,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })).catch(() => sendResponse({ requestId: message.requestId, ok: false, error: 'PROBE_FAILED' }))
     return true
   }
+  if (message.action === 'collect-boss-resume') {
+    collectBossResume().then((resumeSnapshot) => sendResponse({
+      requestId: message.requestId,
+      ok: Boolean(resumeSnapshot),
+      extensionVersion: chrome.runtime.getManifest().version,
+      ...(resumeSnapshot ? { resumeSnapshot } : { error: 'PROBE_FAILED' })
+    })).catch(() => sendResponse({ requestId: message.requestId, ok: false, error: 'PROBE_FAILED' }))
+    return true
+  }
   if (message.action === 'search-boss-jobs') {
     const query = typeof message.payload?.query === 'string' ? message.payload.query.normalize('NFKC').trim() : ''
     if (!query || query.length > 120) {
@@ -75,6 +84,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ok: true,
       extensionVersion: chrome.runtime.getManifest().version,
       jobs
+    })).catch(() => sendResponse({ requestId: message.requestId, ok: false, error: 'PROBE_FAILED' }))
+    return true
+  }
+  if (message.action === 'open-boss-conversation') {
+    const target = validBossConversationTarget(message.payload)
+    if (!target) {
+      sendResponse({ requestId: message.requestId, ok: false, error: 'INVALID_REQUEST' })
+      return false
+    }
+    openBossConversation(target).then((result) => sendResponse({
+      requestId: message.requestId,
+      ok: Boolean(result.recipient),
+      extensionVersion: chrome.runtime.getManifest().version,
+      ...(result.recipient ? { recipient: result.recipient } : {}),
+      ...(result.attention ? { attention: result.attention } : {}),
+      ...(!result.recipient && !result.attention ? { error: 'PROBE_FAILED' } : {})
     })).catch(() => sendResponse({ requestId: message.requestId, ok: false, error: 'PROBE_FAILED' }))
     return true
   }
@@ -370,8 +395,125 @@ function validBossJobDetailUrl(value) {
   }
 }
 
+function validBossConversationTarget(payload) {
+  const url = validBossJobDetailUrl(payload?.url)
+  const title = typeof payload?.title === 'string' ? payload.title.normalize('NFKC').trim() : ''
+  const company = typeof payload?.company === 'string' ? payload.company.normalize('NFKC').trim() : ''
+  return url && title && title.length <= 300 && company && company.length <= 300
+    ? { url, title, company }
+    : null
+}
+
+async function openBossConversation(target) {
+  const existingChatTabIds = new Set((await chrome.tabs.query({
+    url: ['https://www.zhipin.com/web/geek/chat*']
+  })).flatMap((tab) => tab.id ? [tab.id] : []))
+  const tab = await chrome.tabs.create({ url: target.url, active: false })
+  if (!tab.id) return {}
+  let keepTargetTab = false
+  try {
+    await waitForTabComplete(tab.id, 12_000)
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    let opened = false
+    const frameIds = [...new Set([0, ...(bossFrameIds.get(tab.id) ?? [])])]
+    for (const frameId of frameIds) {
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id, {
+          action: 'open-boss-conversation',
+          payload: target
+        }, { frameId })
+        if (response?.attention) {
+          keepTargetTab = true
+          if (chrome.tabs.update) {
+            await chrome.tabs.update(tab.id, { active: true }).catch(() => undefined)
+          }
+          return { attention: response.attention }
+        }
+        if (response?.opened) opened = true
+      } catch {
+        // Continue to another registered frame without relaxing target checks.
+      }
+    }
+    if (!opened) return {}
+    // Keep the exact posting-bound conversation surface open even when a new
+    // BOSS DOM revision prevents recipient inspection. Sending still fails
+    // closed, but the visible page remains available for adapter recovery.
+    keepTargetTab = true
+    if (chrome.tabs.update) {
+      const currentTab = await chrome.tabs.get(tab.id).catch(() => null)
+      if (!currentTab?.url?.includes('/web/geek/chat')) {
+        await chrome.tabs.update(tab.id, { url: 'https://www.zhipin.com/web/geek/chat', active: false })
+        await waitForTabComplete(tab.id, 12_000)
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_200))
+    const sameTabRecipient = await inspectBossConversationInTab(tab.id)
+    if (sameTabRecipient) {
+      keepTargetTab = true
+      return { recipient: sameTabRecipient }
+    }
+    const newChatTabs = (await chrome.tabs.query({ url: ['https://www.zhipin.com/web/geek/chat*'] }))
+      .filter((candidate) => candidate.id && !existingChatTabIds.has(candidate.id))
+    const recipients = []
+    for (const chatTab of newChatTabs) {
+      const recipient = await inspectBossConversationInTab(chatTab.id)
+      if (recipient) recipients.push({ tabId: chatTab.id, recipient })
+    }
+    const unique = [...new Map(recipients.map((item) => [
+      `${item.recipient.platformRecipientId}:${item.recipient.conversationId}`,
+      item
+    ])).values()]
+    return unique.length === 1 ? { recipient: unique[0].recipient } : {}
+  } finally {
+    if (!keepTargetTab) {
+      bossFrameIds.delete(tab.id)
+      await chrome.tabs.remove(tab.id).catch(() => undefined)
+    }
+  }
+}
+
 async function collectBossJobDetail(url) {
   const tab = await chrome.tabs.create({ url, active: false })
+  if (!tab.id) return null
+  try {
+    await waitForTabComplete(tab.id, 12_000)
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    const candidates = new Map()
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const frameIds = [...new Set([0, ...(bossFrameIds.get(tab.id) ?? [])])]
+      for (const frameId of frameIds) {
+        try {
+          const response = await chrome.tabs.sendMessage(tab.id, { action: 'collect-boss-job-detail', payload: { url } }, { frameId })
+          if (response?.jobDetail) candidates.set(response.jobDetail.description, response.jobDetail)
+        } catch {
+          // Continue to the next registered frame.
+        }
+      }
+      const structured = [...candidates.values()]
+        .sort((left, right) => bossJobDetailScore(right) - bossJobDetailScore(left))[0]
+      if (structured && bossJobDetailScore(structured) >= 100_000) return structured
+      if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 700))
+    }
+    return [...candidates.values()]
+      .sort((left, right) => bossJobDetailScore(right) - bossJobDetailScore(left))[0] ?? null
+  } finally {
+    bossFrameIds.delete(tab.id)
+    await chrome.tabs.remove(tab.id).catch(() => undefined)
+  }
+}
+
+function bossJobDetailScore(detail) {
+  const description = typeof detail?.description === 'string' ? detail.description : ''
+  const structuralSignals = [/(岗位职责|工作职责)/u, /(任职要求|职位要求)/u, /(希望你|我们希望)/u, /加分项/u]
+    .filter((pattern) => pattern.test(description)).length
+  return structuralSignals * 100_000 + Math.min(description.length, 50_000)
+}
+
+async function collectBossResume() {
+  const tab = await chrome.tabs.create({
+    url: 'https://www.zhipin.com/web/geek/resume',
+    active: false
+  })
   if (!tab.id) return null
   try {
     await waitForTabComplete(tab.id, 12_000)
@@ -379,8 +521,8 @@ async function collectBossJobDetail(url) {
     const frameIds = [...new Set([0, ...(bossFrameIds.get(tab.id) ?? [])])]
     for (const frameId of frameIds) {
       try {
-        const response = await chrome.tabs.sendMessage(tab.id, { action: 'collect-boss-job-detail' }, { frameId })
-        if (response?.jobDetail) return response.jobDetail
+        const response = await chrome.tabs.sendMessage(tab.id, { action: 'collect-boss-resume' }, { frameId })
+        if (response?.resumeSnapshot) return response.resumeSnapshot
       } catch {
         // Continue to the next registered frame.
       }
@@ -432,14 +574,20 @@ async function inspectBossConversation() {
   const tabs = await chrome.tabs.query({ url: ['https://www.zhipin.com/web/geek/chat*'] })
   for (const tab of tabs) {
     if (!tab.id) continue
-    const frameIds = [...(bossFrameIds.get(tab.id) ?? new Set([0]))]
-    for (const frameId of frameIds) {
-      try {
-        const response = await chrome.tabs.sendMessage(tab.id, { action: 'inspect-boss-conversation' }, { frameId })
-        if (response?.recipient) return response.recipient
-      } catch {
-        // A missing or navigated frame is not a verified conversation.
-      }
+    const recipient = await inspectBossConversationInTab(tab.id)
+    if (recipient) return recipient
+  }
+  return null
+}
+
+async function inspectBossConversationInTab(tabId) {
+  const frameIds = [...new Set([0, ...(bossFrameIds.get(tabId) ?? [])])]
+  for (const frameId of frameIds) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, { action: 'inspect-boss-conversation' }, { frameId })
+      if (response?.recipient) return response.recipient
+    } catch {
+      // A missing or navigated frame is not a verified conversation.
     }
   }
   return null

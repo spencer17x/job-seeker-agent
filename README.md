@@ -2,9 +2,9 @@
 
 [Live Demo](https://resume-os-phi.vercel.app/en) · [中文体验](https://resume-os-phi.vercel.app/zh) · [Deployment and data boundaries](docs/deployment.md)
 
-JobSeeker Agent is a local-first, evidence-grounded job-search agent. It turns a trusted resume and explicit job preferences into cross-platform discovery, qualification, job-specific materials, and recruiter-conversation drafts. Users choose the platforms and automation level. The agent improves search and communication strategy from user corrections, replies, interviews, and outcomes without changing the user's career facts.
+JobSeeker Agent is a local-first, evidence-grounded job-search agent. It turns a trusted resume and explicit job preferences into discovery, qualification, independent job-specific resume copies, and verified recruiter communication. Starting the Agent grants one bounded managed-mode authorization; it does not ask for per-job, per-message, or per-resume confirmations. Login and CAPTCHA challenges remain user actions, and final application submission still requires the repository's explicit user confirmation boundary.
 
-The current MVP runs while the browser is open and is scoped only to BOSS Zhipin. The bundled Manifest V3 Browser Agent detects the BOSS session without reading cookies and provides a fail-closed, approval-bound send adapter. Live BOSS selector verification is still required before treating the adapter as production-ready. The target product requirements are documented in [docs/product-requirements.md](docs/product-requirements.md).
+The current MVP runs while the browser is open and is scoped only to BOSS Zhipin. The bundled Manifest V3 Browser Agent detects the BOSS session without reading cookies and provides a fail-closed managed send adapter. It may open only the exact queued BOSS job conversation, then sends only after deterministic recipient, body, editor, send-control, and platform-receipt checks. Live BOSS selector verification is still required before treating the adapter as production-ready. The target product requirements are documented in [docs/product-requirements.md](docs/product-requirements.md).
 
 The product is built around four principles:
 
@@ -15,13 +15,12 @@ The product is built around four principles:
 
 The primary workflow is:
 
-1. Import or paste an existing resume in Resume Studio.
+1. Import an existing resume from the fixed BOSS online-resume page, upload a file, or paste resume text in Resume Studio. BOSS content is previewed before local evidence import.
 2. Save the target titles, locations, constraints, and communication preferences in Job Agent.
 3. Explicitly start the Agent. Only then does it enable its recurring browser schedule, detect available Chrome sessions, and run discovery.
-4. Confirm every extracted requirement and inspect the evidence and gaps.
-5. Ask the Resume Agent for job-specific, reviewable changes.
-6. Verify each claim and apply selected changes to a separate resume variant.
-7. Manage outreach and follow-ups in the conversation center. A browser adapter may send only after verifying the recipient and final content, and records completion only from a platform success receipt.
+4. The Agent extracts role requirements for ranking, then creates a deterministic `ResumeVariant` by copying the trusted resume and setting the target role. It does not ask AI to rewrite claims and never mutates the master resume.
+5. The Agent opens the exact queued BOSS job conversation, verifies the recipient and final content, sends outreach, handles bounded follow-ups, and sends the linked PDF after a verified recruiter request.
+6. Login, QR/SMS/2FA/CAPTCHA challenges pause for the user. Formal application submission remains a single explicit user confirmation and is never inferred from opening a page or sending a message.
 
 Simulated resume generation is a **Demo / Sandbox** for exploring the interface. It does not represent verified user history and should not be used as the evidence source for a real application.
 
@@ -138,7 +137,7 @@ Existing installations are migrated in place: legacy `resume-os*` localStorage v
 
 Uploaded PDF/DOCX/TXT bytes are processed transiently by the same-origin extraction route and are not written to the domain store. The original document bytes are not stored in IndexedDB. Clearing site data, using a different browser profile, or moving to a different deployment origin produces a separate local workspace unless the user exports or migrates it separately.
 
-A pasted or uploaded draft becomes Agent-ready only after its local Career Evidence
+A pasted, uploaded, or explicitly reviewed BOSS-imported draft becomes Agent-ready only after its local Career Evidence
 source is committed to IndexedDB. If that write fails or browser storage is blocked,
 discovery and setup remain disabled and Resume Studio offers an explicit retry; the
 draft is never treated as evidence-ready merely because it exists in `localStorage`.
@@ -148,12 +147,13 @@ draft is never treated as evidence-ready merely because it exists in `localStora
 Job Agent starts from the resume rather than a required target company. Its first release supports only BOSS Zhipin. Platform availability never implies that the browser send adapter is enabled:
 
 - BOSS Zhipin opens a fixed-host official search carrying the primary target title.
-- BOSS Zhipin session detection and the approval-bound send protocol are implemented. The adapter refuses to send unless BOSS exposes stable recipient and conversation IDs plus a unique editor, exact body, send control, and a newly observed platform receipt.
+- Resume Studio can explicitly open only `https://www.zhipin.com/web/geek/resume` through the local extension, return at most 40,000 characters of visible resume text, and show it for review before parsing and local Career Evidence import. It never reads cookies or returns raw HTML, and the imported text reaches a cloud parser only under the existing explicit provider/fallback preference.
+- BOSS Zhipin session detection and the managed send protocol are implemented. After the one-time Start action, the adapter may open only the exact queued BOSS job URL and its unique communication control. It refuses to send unless BOSS exposes stable recipient and conversation IDs plus a unique editor, exact body, send control, and a newly observed platform receipt.
 - When the local Browser Agent is present on a BOSS search-results tab, it imports at most 50 bounded visible job cards, validates their hosts, scores them locally, and automatically queues eligible roles scoring at least 70. Queuing means “prepare for analysis,” never “submitted.”
 - When no BOSS search tab is open, the extension constructs a fixed-host search from the primary configured title, opens it in an inactive temporary tab, collects the bounded results, and closes the tab. JobSeeker Agent never passes an arbitrary URL to the extension.
 - While enabled, the extension persists a bounded, content-free cycle queue and runtime heartbeat in `chrome.storage.local`. Every 15 minutes it queues work before attempting delivery to a JobSeeker Agent tab. Closing the page leaves the cycle pending; reopening the page dispatches the oldest cycle and waits for a completion receipt before rate-limited delivery of the next. Chrome restart coalesces missed intervals into one catch-up cycle rather than replaying a burst. Results and career data remain in the JobSeeker Agent origin; queued records contain only cycle IDs, timestamps, attempts, and missed-interval counts, never cookies, resumes, jobs, or private inbox content.
-- Each queued role receives a posting-bound Target Job and stable draft OptimizationRun. Up to three roles per Agent cycle are analyzed sequentially through the configured model. Opening a queued role reuses that analysis for requirement review, and confirming it advances the same run into evidence mapping instead of creating a duplicate workflow.
-- Once a validated job-specific resume reaches `ready-to-apply`, JobSeeker Agent creates one evidence-linked BOSS opening draft. Editing it invalidates any prior approval. Message state is persisted separately as draft, awaiting approval, approved, sending, sent, delivered, read, or failed; external states require a matching recipient, body fingerprint, and platform receipt.
+- Each queued role receives a posting-bound Target Job, stable OptimizationRun, and deterministic job-specific `ResumeVariant`. Up to three roles per Agent cycle are analyzed sequentially for ranking and requirement extraction, but resume prose is not AI-rewritten: the trusted resume is copied unchanged apart from job-specific target-role metadata.
+- Once a validated job-specific resume reaches `ready-to-apply`, JobSeeker Agent creates one evidence-linked BOSS opening draft and drains it automatically in managed mode. Message state is persisted separately as draft, awaiting validation, validated, sending, sent, delivered, read, or failed; external states require a matching recipient, body fingerprint, and platform receipt.
 - Verified incoming BOSS message nodes are reduced inside the extension to bounded event types such as recruiter reply, resume request, interview invitation, offer, or rejection. Raw inbox text is not returned to the JobSeeker Agent page or persisted. These events advance the local recruitment stage without allowing older or repeated events to regress it.
 - Each new event may create one idempotent, job-bound reply draft from a fixed safe template. Resume requests are acknowledged only after the attachment receipt is verified. While a thread is waiting for a reply, the Agent may prepare a follow-up after 72 hours, with at most two follow-ups per thread and never while another outbound draft is pending.
 - In Autopilot mode, a generated reply or follow-up is sent only when the extension can re-verify that the currently active BOSS conversation is the same immutable recipient and conversation already bound to the thread. A different active chat cannot rebind the thread; the message remains in the review queue instead.

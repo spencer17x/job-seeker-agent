@@ -4,7 +4,7 @@ import type {
   BossConversationThread,
   IndexedDbDomainStore
 } from '@/lib/agent/domain-store'
-import type { ResumeDraft } from '@/lib/resume-model'
+import { isTrustedResumeSource, type ResumeDraft } from '@/lib/resume-model'
 import { prepareReadyBossApplicationPackets, type ApplicationPacket } from './application-record'
 import type {
   ApplicationRecord,
@@ -32,9 +32,7 @@ export async function loadJobWorkspaceSnapshot(input: {
   now?: () => string
 }): Promise<JobWorkspaceSnapshot> {
   const { store, activeDraft } = input
-  const trustedDraftSource = Boolean(
-    activeDraft && ['paste', 'upload'].includes(activeDraft.source)
-  )
+  const trustedDraftSource = Boolean(activeDraft && isTrustedResumeSource(activeDraft.source))
   const sourceDraftId = trustedDraftSource ? activeDraft!.id : ''
   const [sources, profiles, postings, recommendations, initialApplications, evidenceSource] = await Promise.all([
     store.list('jobSources'),

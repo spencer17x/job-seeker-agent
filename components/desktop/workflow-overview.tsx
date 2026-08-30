@@ -12,6 +12,7 @@ import {
 import { useTranslations } from 'next-intl'
 import { useEffect, useState } from 'react'
 import { useResumeDraft } from '@/components/resume-draft-provider'
+import { isTrustedResumeSource } from '@/lib/resume-model'
 import {
   ACTIVE_WORKFLOW_CHANGED_EVENT,
   loadActiveWorkflowSummary,
@@ -23,7 +24,7 @@ export function WorkflowOverview({ compact = false, hud = false }: { compact?: b
   const t = useTranslations('desktop.workflow')
   const { activeDraft } = useResumeDraft()
   const { openApp } = useDesktop()
-  const hasProfile = activeDraft?.source === 'paste' || activeDraft?.source === 'upload'
+  const hasProfile = isTrustedResumeSource(activeDraft?.source)
   const hasUnverifiedDraft = Boolean(activeDraft && !hasProfile)
   const workflow = useActiveWorkflowSummary()
   const hasTarget = Boolean(

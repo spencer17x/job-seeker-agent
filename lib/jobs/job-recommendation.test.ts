@@ -25,6 +25,17 @@ const facts = [
 ]
 
 describe('scoreJobRecommendation', () => {
+  it('keeps the input fingerprint stable across operational refresh timestamps', () => {
+    const first = scoreJobRecommendation({ posting, profile, sourceDraftId: 'draft-1', facts, now })
+    const refreshed = scoreJobRecommendation({
+      posting: { ...posting, lastCheckedAt: '2026-08-20T10:00:00.000Z' },
+      profile: { ...profile, updatedAt: '2026-08-20T10:00:00.000Z' },
+      sourceDraftId: 'draft-1',
+      facts,
+      now
+    })
+    expect(refreshed.inputFingerprint).toBe(first.inputFingerprint)
+  })
   it('produces stable versioned contributions and evidence references', () => {
     const first = scoreJobRecommendation({ posting, profile, sourceDraftId: 'draft-1', facts, now })
     const second = scoreJobRecommendation({ posting, profile, sourceDraftId: 'draft-1', facts: [...facts].reverse(), now })

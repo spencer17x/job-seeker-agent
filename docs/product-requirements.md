@@ -8,13 +8,16 @@ prepare job-specific material, manage recruiter conversations, and improve its
 strategy from user corrections and real outcomes.
 
 The agent is not a bulk-application bot. It must preserve career evidence, platform
-rules, user intent, and a complete action history.
+rules, user intent, and a complete action history. The explicit Start action grants
+managed execution for discovery, deterministic resume-copy creation, verified
+recruiter communication, and requested-resume delivery without per-action approval.
+Login/CAPTCHA challenges and the final formal submission confirmation remain user actions.
 
 ## Primary workflow
 
 1. The user selects Start setup and describes the work they want in natural language.
    They may instead begin from selectable job-intent tags, or combine both methods.
-2. The user uploads or pastes a trusted resume and waits for the structured resume
+2. The user imports a bounded BOSS online-resume snapshot for review, uploads, or pastes a trusted resume and waits for the structured resume
    analysis and local Career Evidence transaction to finish. A failed evidence write
    remains a repairable blocker rather than an Agent-ready resume. The Agent converts the prompt and resume-grounded suggestions
    into a typed, reviewable intent proposal; neither source silently becomes a saved
@@ -24,9 +27,10 @@ rules, user intent, and a complete action history.
    skills, locations, salary, experience, education, workplace/employment type,
    industries, company preferences/blocks, company size/stage, posting age, and terms.
    Unclear or conflicting intent remains a question until the user resolves it.
-4. The user confirms delegation rules: minimum match score, daily contact limit,
-   automation level, and whether a verified recruiter resume request may send the
-   job-specific PDF automatically. Only the final explicit Start enables execution.
+4. The user reviews the minimum match score and daily contact limit. The final explicit
+   Start grants managed execution; there is no second delegation checkbox or per-message,
+   per-job, or per-resume approval. A verified recruiter resume request automatically
+   sends the application-linked PDF.
 5. Model configuration and BOSS connection alone do not start the agent. Per-platform
    API configuration and platform selection are not part of the primary flow.
 6. After explicit activation, the local Browser Agent detects platform sessions already
@@ -36,8 +40,10 @@ rules, user intent, and a complete action history.
    exporting cookies or credentials to JobSeeker Agent.
 7. The agent continuously discovers and deduplicates roles, explains its ranking,
    and rejects roles outside hard constraints.
-8. For a selected role, the agent maps requirements to saved evidence, creates a
-   job-specific resume variant, and prepares an evidence-grounded opening message.
+8. For a selected role, the agent creates an independent `ResumeVariant` by copying the
+   trusted resume and setting job-specific target metadata. It does not request an AI
+   rewrite and does not mutate the master resume. It then prepares an evidence-grounded
+   opening message.
 9. A conversation inbox groups recruiter messages, follow-ups, interview scheduling,
    and negotiation by job. Each outbound action records its source, approval policy,
    final content, timestamp, and provider receipt when available.
@@ -51,10 +57,11 @@ rules, user intent, and a complete action history.
    DOCX only as a verified compatibility fallback, and records `resume-sent` only
    after recipient, conversation, artifact fingerprint, filename, and platform
    attachment receipt all match.
-13. De-identified recruiter events create at most one fixed-template reply proposal.
-    Waiting threads may create a follow-up after 72 hours, capped at two. Autopilot
-    still requires immutable recipient/conversation re-verification and an exact
-    platform message receipt; otherwise the proposal remains reviewable.
+13. De-identified recruiter events create at most one fixed-template reply. Waiting
+    threads may create a follow-up after 72 hours, capped at two. Managed mode opens
+    only the exact queued BOSS job conversation and still requires immutable recipient/
+    conversation re-verification and an exact platform receipt; otherwise the action
+    remains queued rather than being reported as sent.
 
 ## Job-intent understanding and selectable taxonomy
 
@@ -231,10 +238,11 @@ The extension constructs the fixed host and path, uses an inactive temporary tab
 collects registered-frame results, and closes the tab. Callers cannot provide a URL.
 
 Queued candidates are analyzed in bounded sequential batches. Each candidate owns a
-posting-bound Target Job and stable draft OptimizationRun so similar descriptions from
+posting-bound Target Job and stable OptimizationRun so similar descriptions from
 different BOSS postings cannot overwrite one another. Extracted requirements remain
-unconfirmed until review. The review surface reuses the queued analysis and promotes
-the same run into evidence mapping after confirmation.
+unconfirmed ranking inputs. Managed resume creation does not treat them as career facts
+or use them to rewrite claims; it advances a no-op change set through the deterministic
+state machine and stores an independent copy of the trusted resume.
 
 Validated applications create a separate BOSS conversation thread and evidence-linked
 opening draft. Approval is bound to the exact recipient and body fingerprint. Any edit
@@ -246,8 +254,9 @@ The local orchestrator watches applied optimization runs. Once every determinist
 packet check passes, it advances the application to `ready-to-apply` and creates the
 single opening thread and draft idempotently, without a separate preparation click.
 
-The browser send path is approval-bound and fail-closed. It repeats recipient and
-conversation inspection, recomputes the approved body fingerprint, verifies the editor
+The browser send path is Start-authorized and fail-closed. It opens only an allowlisted,
+posting-bound BOSS job URL, verifies the unique communication control, repeats recipient
+and conversation inspection, recomputes the final body fingerprint, verifies the editor
 after writing, and clicks only one unique send control. A successful response requires
 one exact-body message node, a platform message ID, and an observed sent/delivered/read
 state. Anything else is stored as `failed`, not `sent`.

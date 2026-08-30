@@ -8,7 +8,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false
   }
   if (message?.action === 'collect-boss-job-detail') {
-    sendResponse({ jobDetail: collectBossJobDetail() })
+    sendResponse({ jobDetail: collectBossJobDetail(message.payload?.url) })
+    return false
+  }
+  if (message?.action === 'collect-boss-resume') {
+    sendResponse({ resumeSnapshot: collectBossResumeSnapshot() })
+    return false
+  }
+  if (message?.action === 'open-boss-conversation') {
+    sendResponse(openBossConversation(message.payload))
     return false
   }
   if (message?.action === 'inspect-boss-conversation') {
@@ -44,6 +52,34 @@ chrome.runtime.sendMessage({ action: 'boss-frame-ready' }).catch(() => undefined
 
 function inspectBossConversation() {
   return conversationContext()?.recipient ?? null
+}
+
+function openBossConversation(payload) {
+  const page = bossJobDetailPage(payload?.url)
+  const title = typeof payload?.title === 'string' ? payload.title.normalize('NFKC').trim() : ''
+  const company = typeof payload?.company === 'string' ? payload.company.normalize('NFKC').trim() : ''
+  if (!page || !title || title.length > 300 || !company || company.length > 300) return { opened: false }
+  const bodyText = document.body?.innerText?.normalize('NFKC').slice(0, 100_000) ?? ''
+  if (/(安全验证|验证码|完成验证|滑块验证|请先验证)/u.test(bodyText)) {
+    return { opened: false, attention: 'captcha-required' }
+  }
+  if (detectSessionState() === 'login-required') {
+    return { opened: false, attention: 'login-required' }
+  }
+  const comparable = (value) => value.toLocaleLowerCase().replace(/[\s·•|｜,，。:：()（）\[\]【】_-]+/gu, '')
+  const visibleIdentity = comparable(bodyText)
+  // The canonical job-detail URL plus exact visible title identify the target.
+  // BOSS may redact or abbreviate the company label on the detail page, so the
+  // stored company remains bounded audit context but is not used as a click gate.
+  if (!visibleIdentity.includes(comparable(title))) {
+    return { opened: false }
+  }
+  const controls = visibleMatches('button, a, [role="button"]', (element) => (
+    ['立即沟通', '继续沟通', '打招呼'].includes(element.textContent?.replace(/\s+/gu, '').trim() ?? '')
+  ))
+  if (controls.length !== 1) return { opened: false }
+  controls[0].click()
+  return { opened: true }
 }
 
 function diagnoseBossAdapter() {
@@ -433,25 +469,130 @@ function collectBossJobs() {
   }).slice(0, 50)
 }
 
-function collectBossJobDetail() {
-  if (!location.hostname.endsWith('zhipin.com')) return null
-  const externalId = /\/job_detail\/([^/.?]+)/u.exec(location.pathname)?.[1]
-  if (!externalId) return null
-  const direct = [...document.querySelectorAll([
+function collectBossJobDetail(explicitUrl) {
+  const page = bossJobDetailPage(explicitUrl)
+  if (!page) return null
+  const direct = deepQuerySelectorAll([
     '.job-sec-text',
     '[class*="job-sec-text"]',
     '[class*="job-detail-content"]',
     '[class*="job-description"]'
-  ].join(','))].map((element) => element.textContent?.replace(/\s+/gu, ' ').trim() ?? '')
+  ].join(',')).map((element) => element.textContent?.replace(/\s+/gu, ' ').trim() ?? '')
     .filter((value) => value.length >= 40)
     .sort((left, right) => right.length - left.length)[0]
-  const heading = [...document.querySelectorAll('h1, h2, h3, h4, strong, span')]
-    .find((element) => element.textContent?.trim() === '职位描述')
-  const section = heading?.closest('section, article, [class*="job-sec"], [class*="job-detail"]')
-  const fallback = section?.textContent?.replace(/\s+/gu, ' ').trim().replace(/^职位描述\s*/u, '') ?? ''
-  const description = (direct || fallback).slice(0, 50_000)
+  const heading = deepQuerySelectorAll('h1, h2, h3, h4, strong, span')
+    .find((element) => element.textContent?.replace(/\s+/gu, '') === '职位描述')
+  const fallback = heading ? textUntilNextHeading(heading, 50_000) : ''
+  const visibleSection = jobDescriptionFromVisibleText(document.body?.innerText ?? '')
+  const description = (fallback || visibleSection || direct).slice(0, 50_000)
   if (description.length < 40) return null
-  return { externalId, url: location.href, description }
+  return { externalId: page.externalId, url: page.url, description }
+}
+
+function jobDescriptionFromVisibleText(value) {
+  const text = value.normalize('NFKC').replace(/\r/gu, '')
+  const startMatch = /职位\s*描\s*述/u.exec(text)
+  if (!startMatch) return ''
+  const remainder = text.slice(startMatch.index + startMatch[0].length)
+  const boundaries = [
+    /\n\s*竞争力分析/u,
+    /\n\s*BOSS\s*安全提示/iu,
+    /\n\s*公司介绍/u,
+    /\n\s*工商信息/u,
+    /\n\s*工作地址/u
+  ].flatMap((pattern) => {
+    const match = pattern.exec(remainder)
+    return match ? [match.index] : []
+  })
+  const end = boundaries.length > 0 ? Math.min(...boundaries) : remainder.length
+  return remainder.slice(0, end)
+    .replace(/[ \t]+/gu, ' ')
+    .replace(/\n{3,}/gu, '\n\n')
+    .trim()
+    .slice(0, 50_000)
+}
+
+function bossJobDetailPage(explicitUrl) {
+  const candidates = [explicitUrl, location.href]
+  try {
+    if (typeof window !== 'undefined' && window.top?.location?.href) {
+      candidates.push(window.top.location.href)
+    }
+  } catch {
+    // Cross-origin parents are never used as trusted page identity.
+  }
+  for (const value of candidates) {
+    if (typeof value !== 'string') continue
+    try {
+      const url = new URL(value)
+      const externalId = url.hostname === 'www.zhipin.com'
+        ? /\/job_detail\/([^/.?]+)/u.exec(url.pathname)?.[1]
+        : undefined
+      if (!externalId) continue
+      url.hash = ''
+      return { externalId, url: url.toString() }
+    } catch {
+      // Continue to another same-origin candidate.
+    }
+  }
+  return null
+}
+
+function textUntilNextHeading(heading, maximum) {
+  const root = heading.getRootNode()
+  const nextHeading = deepQuerySelectorAll('h1, h2, h3', root)
+    .find((candidate) => candidate !== heading && Boolean(heading.compareDocumentPosition(candidate) & 4))
+  const range = document.createRange()
+  range.setStartAfter(heading)
+  if (nextHeading) range.setEndBefore(nextHeading)
+  else if (root.lastChild) range.setEndAfter(root.lastChild)
+  else range.setEndAfter(heading)
+  return visibleBoundedText(range.cloneContents(), maximum).replace(/^职位描述\s*/u, '')
+}
+
+function deepQuerySelectorAll(selector, root = document) {
+  const matches = [...root.querySelectorAll(selector)]
+  for (const element of root.querySelectorAll('*')) {
+    if (element.shadowRoot) matches.push(...deepQuerySelectorAll(selector, element.shadowRoot))
+  }
+  return matches
+}
+
+function collectBossResumeSnapshot() {
+  if (
+    location.hostname !== 'www.zhipin.com'
+    || !/^\/web\/geek\/resume(?:\/|$)/u.test(location.pathname)
+  ) return null
+  const candidates = [...document.querySelectorAll([
+    '[class*="resume-content"]',
+    '[class*="resume-detail"]',
+    '[class*="resume-preview"]',
+    'main'
+  ].join(','))].flatMap((element) => {
+    const text = visibleBoundedText(element, 40_000)
+    return text.length >= 40 ? [text] : []
+  }).sort((left, right) => right.length - left.length)
+  const text = candidates[0] ?? ''
+  if (text.length < 40 || !/(工作经历|项目经历|教育经历|个人优势|求职期望|技能)/u.test(text)) return null
+  const url = new URL(location.href)
+  url.search = ''
+  url.hash = ''
+  return {
+    sourceUrl: url.toString(),
+    text,
+    collectedAt: new Date().toISOString()
+  }
+}
+
+function visibleBoundedText(root, maximum) {
+  const clone = root.cloneNode(true)
+  clone.querySelectorAll('script, style, noscript, svg, [hidden], [aria-hidden="true"]').forEach((node) => node.remove())
+  return (clone.innerText || clone.textContent || '')
+    .normalize('NFKC')
+    .replace(/[ \t]+/gu, ' ')
+    .replace(/\n{3,}/gu, '\n\n')
+    .trim()
+    .slice(0, maximum)
 }
 
 function detectSessionState() {

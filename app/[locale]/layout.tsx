@@ -35,7 +35,7 @@ export default async function LocaleLayout({
   setRequestLocale(locale)
 
   return (
-    <html lang={locale} data-theme="dark" data-motion="system" data-scroll-behavior="smooth" suppressHydrationWarning>
+    <html lang={locale} data-theme="light" data-theme-mode="light" data-motion="system" data-scroll-behavior="smooth" suppressHydrationWarning>
       <head>
         <ThemeScript />
       </head>

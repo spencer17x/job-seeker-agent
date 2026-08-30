@@ -4,7 +4,7 @@ import { createDomainStore } from '@/lib/agent/domain-store'
 import { buildJDRequirementAnalysis } from '@/lib/agent/jd-report'
 import { normalizeResumeData } from '@/lib/resume-model'
 import type { JobPosting, JobRecommendation } from './job-domain'
-import { analyzeBossCandidateQueue, loadBossCandidateAnalysis, persistBossCandidateAnalysis, planBossCandidates, queueBossCandidates, upsertBossBrowserJobs } from './boss-agent'
+import { analyzeBossCandidateQueue, loadBossCandidateAnalysis, persistBossCandidateAnalysis, planBossCandidates, prepareBossCandidateResumeVariants, queueBossCandidates, upsertBossBrowserJobs } from './boss-agent'
 
 const now = '2026-08-19T08:00:00.000Z'
 
@@ -25,6 +25,20 @@ function recommendation(postingId: string, score: number, decision?: JobRecommen
 }
 
 describe('BOSS job agent candidate queue', () => {
+  it('queues score-qualified unknown candidates for deeper analysis while still rejecting exclusions', () => {
+    const role = posting('unknown-1')
+    const scored = recommendation(role.id, 80)
+    expect(planBossCandidates({
+      postings: [role],
+      recommendations: [{ ...scored, eligibility: 'unknown' }],
+      sourceDraftId: 'draft-1'
+    })).toHaveLength(1)
+    expect(planBossCandidates({
+      postings: [role],
+      recommendations: [{ ...scored, eligibility: 'excluded', preliminaryScore: undefined }],
+      sourceDraftId: 'draft-1'
+    })).toHaveLength(0)
+  })
   it('selects only open, eligible BOSS roles above the threshold', () => {
     const boss = posting('boss-high')
     const low = posting('boss-low')
@@ -76,6 +90,25 @@ describe('BOSS job agent candidate queue', () => {
       }]
     })
     expect(stored).toMatchObject([{ externalId: 'abc', sourceId: 'job-source-boss-browser', locale: 'zh' }])
+    const detailed = {
+      ...stored[0],
+      description: '完整岗位职责：负责 TypeScript Agent 平台开发与稳定性建设。',
+      detailFetchedAt: now,
+      contentHash: 'hash:detailed'
+    }
+    await store.put('jobPostings', detailed)
+    const refreshed = await upsertBossBrowserJobs({
+      store,
+      now: '2026-08-20T08:00:00.000Z',
+      jobs: [{
+        externalId: 'abc', url: 'https://www.zhipin.com/job_detail/abc.html',
+        title: '平台工程师', company: '示例公司', summary: '列表摘要', location: '杭州'
+      }]
+    })
+    expect(refreshed[0]).toMatchObject({
+      description: detailed.description,
+      detailFetchedAt: now
+    })
     await expect(upsertBossBrowserJobs({
       store,
       now,
@@ -119,6 +152,29 @@ describe('BOSS job agent candidate queue', () => {
       applicationId: application.id,
       resume: normalizeResumeData({ profile: { name: 'Ada', title: 'Engineer', summary: [], tags: [], links: [] } })
     })).toMatchObject({ optimizationRunId: expect.any(String), analysis: { targetJob: { id: analysis.targetJob.id } } })
+    const detailedPosting = { ...role, description: 'Build TypeScript platforms and operate Kubernetes production services.', contentHash: 'hash:detailed' }
+    await store.put('jobPostings', detailedPosting)
+    const detailedAnalysis = buildJDRequirementAnalysis({
+      report: {
+        jobTitle: role.title,
+        company: role.company,
+        requirements: [{ text: 'Operate Kubernetes services', category: 'skill', priority: 'must', weight: 6, keywords: ['Kubernetes'] }],
+        resumeEmphasis: [], interviewPrep: []
+      },
+      jobDescription: detailedPosting.description,
+      locale: 'en',
+      resume: normalizeResumeData({ profile: { name: 'Ada', title: 'Engineer', summary: [], tags: [], links: [] } }),
+      timestamp: now,
+      targetIdentity: role.id
+    })
+    const rebased = await persistBossCandidateAnalysis({
+      store, applicationId: application.id, analysis: detailedAnalysis, now
+    })
+    expect(rebased.targetJobId).toBe(detailedAnalysis.targetJob.id)
+    expect(await store.list('optimizationRuns')).toMatchObject([{
+      stage: 'draft', targetJobId: detailedAnalysis.targetJob.id,
+      inputFingerprint: detailedAnalysis.matrix.inputFingerprint
+    }])
     await store.close()
   })
 
@@ -154,6 +210,66 @@ describe('BOSS job agent candidate queue', () => {
     expect(result.prepared).toHaveLength(2)
     expect(new Set(result.prepared.map((application) => application.targetJobId)).size).toBe(2)
     expect(await store.list('jobRequirements')).toHaveLength(2)
+    await store.close()
+  })
+
+  it('creates an independent job-specific copy without AI rewrites or master mutation', async () => {
+    const store = createDomainStore({ databaseName: `boss-managed-variant-${crypto.randomUUID()}`, indexedDB: new IDBFactory() })
+    const role = posting('boss-managed')
+    await store.put('jobSources', { id: 'manual-boss', kind: 'manual', label: 'BOSS', enabled: true, createdAt: now, updatedAt: now })
+    await store.put('jobSearchProfiles', {
+      id: 'profile-1', name: 'BOSS roles', platforms: ['boss'], titles: ['Platform Engineer'], adjacentTitles: [],
+      locations: [], excludedLocations: [], workplaceTypes: [], employmentTypes: [], requiredTerms: [],
+      preferredTerms: [], excludedTerms: [], maximumAgeDays: 30, createdAt: now, updatedAt: now
+    })
+    await store.put('jobPostings', role)
+    await store.put('jobRecommendations', recommendation(role.id, 92))
+    const queued = await queueBossCandidates({ store, sourceDraftId: 'draft-1', now })
+    const resume = normalizeResumeData({
+      profile: { name: 'Ada', title: 'Software Engineer', summary: ['Builds reliable systems.'], tags: ['TypeScript'], links: [] },
+      projects: [{ id: 'project-1', name: 'Platform', type: 'Work', tags: [], summary: 'Built a platform.', highlights: [] }]
+    }, { source: 'paste', now })
+    const original = structuredClone(resume)
+    const analysis = buildJDRequirementAnalysis({
+      report: {
+        jobTitle: role.title,
+        company: role.company,
+        requirements: [{ text: 'TypeScript platform delivery', category: 'skill', priority: 'must', weight: 5, keywords: ['TypeScript'] }],
+        resumeEmphasis: ['Mention TypeScript'],
+        interviewPrep: []
+      },
+      jobDescription: role.description,
+      locale: 'en',
+      resume,
+      timestamp: now,
+      targetIdentity: role.id
+    })
+    await persistBossCandidateAnalysis({ store, applicationId: queued.queued[0].id, analysis, now })
+
+    const prepared = await prepareBossCandidateResumeVariants({
+      store,
+      sourceDraftId: 'draft-1',
+      resume,
+      now: () => '2026-08-19T08:05:00.000Z'
+    })
+
+    expect(prepared).toHaveLength(1)
+    expect(resume).toEqual(original)
+    expect(await store.list('resumeVariants')).toMatchObject([{
+      sourceDraftId: 'draft-1',
+      targetJobId: analysis.targetJob.id,
+      data: {
+        targetRole: 'Platform Engineer',
+        profile: { title: 'Software Engineer', summary: ['Builds reliable systems.'] },
+        projects: original.projects
+      }
+    }])
+    expect(await store.list('optimizationRuns')).toMatchObject([{
+      stage: 'applied',
+      acceptedChangeIds: [],
+      changeSet: { changes: [] },
+      appliedVariantId: expect.any(String)
+    }])
     await store.close()
   })
 })

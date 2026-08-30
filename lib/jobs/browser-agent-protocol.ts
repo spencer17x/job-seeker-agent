@@ -61,6 +61,19 @@ export const browserBossJobDetailSchema = z.object({
 
 export type BrowserBossJobDetail = z.infer<typeof browserBossJobDetailSchema>
 
+export const browserBossResumeSnapshotSchema = z.object({
+  sourceUrl: z.url().max(2_000).refine((value) => {
+    const url = new URL(value)
+    return url.protocol === 'https:'
+      && url.hostname === 'www.zhipin.com'
+      && /^\/web\/geek\/resume(?:\/|$)/u.test(url.pathname)
+  }),
+  text: z.string().trim().min(40).max(40_000),
+  collectedAt: z.iso.datetime({ offset: true })
+}).strict()
+
+export type BrowserBossResumeSnapshot = z.infer<typeof browserBossResumeSnapshotSchema>
+
 export const browserBossRecipientSchema = z.object({
   platformRecipientId: z.string().trim().min(1).max(500),
   conversationId: z.string().trim().min(1).max(500),
@@ -69,6 +82,9 @@ export const browserBossRecipientSchema = z.object({
 }).strict()
 
 export type BrowserBossRecipient = z.infer<typeof browserBossRecipientSchema>
+
+export const browserAgentAttentionSchema = z.enum(['login-required', 'captcha-required'])
+export type BrowserAgentAttention = z.infer<typeof browserAgentAttentionSchema>
 
 export const browserBossSendReceiptSchema = z.object({
   platformMessageId: z.string().trim().min(1).max(500),
@@ -161,6 +177,7 @@ export const browserAgentResponseSchema = z.object({
   sessions: z.array(browserPlatformSessionSchema).max(JOB_AGENT_PLATFORM_IDS.length).optional(),
   jobs: z.array(browserBossJobSchema).max(50).optional(),
   jobDetail: browserBossJobDetailSchema.optional(),
+  resumeSnapshot: browserBossResumeSnapshotSchema.optional(),
   recipient: browserBossRecipientSchema.optional(),
   sendReceipt: browserBossSendReceiptSchema.optional(),
   conversationSignals: z.array(browserBossConversationSignalSchema).max(100).optional(),
@@ -168,6 +185,7 @@ export const browserAgentResponseSchema = z.object({
   resumeReceipt: browserBossResumeReceiptSchema.optional(),
   diagnostics: z.array(browserBossAdapterDiagnosticSchema).max(50).optional(),
   jobAgentRuntime: browserJobAgentRuntimeSchema.optional(),
+  attention: browserAgentAttentionSchema.optional(),
   error: z.enum(['EXTENSION_UNAVAILABLE', 'INVALID_REQUEST', 'PROBE_FAILED']).optional()
 })
 
@@ -205,6 +223,17 @@ export async function collectBossJobDetail(input: {
   })
 }
 
+export async function collectBossResumeSnapshot(input: {
+  window: Pick<Window, 'addEventListener' | 'removeEventListener' | 'dispatchEvent'>
+  timeoutMs?: number
+}): Promise<BrowserAgentResponse> {
+  return requestBrowserAgent({
+    ...input,
+    timeoutMs: input.timeoutMs ?? 15_000,
+    action: 'collect-boss-resume'
+  })
+}
+
 export async function searchBossBrowserJobs(input: {
   window: Pick<Window, 'addEventListener' | 'removeEventListener' | 'dispatchEvent'>
   query: string
@@ -225,6 +254,34 @@ export async function inspectBossBrowserConversation(input: {
   timeoutMs?: number
 }): Promise<BrowserAgentResponse> {
   return requestBrowserAgent({ ...input, action: 'inspect-boss-conversation' })
+}
+
+export async function openBossBrowserConversation(input: {
+  window: Pick<Window, 'addEventListener' | 'removeEventListener' | 'dispatchEvent'>
+  url: string
+  title: string
+  company: string
+  timeoutMs?: number
+}): Promise<BrowserAgentResponse> {
+  const url = new URL(input.url)
+  const title = input.title.normalize('NFKC').trim()
+  const company = input.company.normalize('NFKC').trim()
+  if (
+    url.protocol !== 'https:'
+    || url.hostname !== 'www.zhipin.com'
+    || !/^\/job_detail\/[^/]+\.html$/u.test(url.pathname)
+    || !title
+    || title.length > 300
+    || !company
+    || company.length > 300
+  ) throw new TypeError('BOSS conversation target is invalid')
+  url.hash = ''
+  return requestBrowserAgent({
+    window: input.window,
+    timeoutMs: input.timeoutMs ?? 20_000,
+    action: 'open-boss-conversation',
+    payload: { url: url.toString(), title, company }
+  })
 }
 
 export async function collectBossConversationSignals(input: {
@@ -367,7 +424,7 @@ export function readBrowserJobAgentCycle(event: Event) {
 async function requestBrowserAgent(input: {
   window: Pick<Window, 'addEventListener' | 'removeEventListener' | 'dispatchEvent'>
   timeoutMs?: number
-  action: 'detect-platforms' | 'collect-boss-jobs' | 'collect-boss-job-detail' | 'search-boss-jobs' | 'inspect-boss-conversation' | 'collect-boss-conversation-signals' | 'summarize-boss-history' | 'diagnose-boss-adapter' | 'send-boss-message' | 'send-boss-resume-attachment' | 'configure-job-agent' | 'get-job-agent-runtime' | 'report-job-agent-cycle'
+  action: 'detect-platforms' | 'collect-boss-jobs' | 'collect-boss-job-detail' | 'collect-boss-resume' | 'search-boss-jobs' | 'open-boss-conversation' | 'inspect-boss-conversation' | 'collect-boss-conversation-signals' | 'summarize-boss-history' | 'diagnose-boss-adapter' | 'send-boss-message' | 'send-boss-resume-attachment' | 'configure-job-agent' | 'get-job-agent-runtime' | 'report-job-agent-cycle'
   payload?: Record<string, unknown>
 }): Promise<BrowserAgentResponse> {
   const requestId = crypto.randomUUID()

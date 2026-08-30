@@ -33,7 +33,7 @@ export function validateParsedResumeTaskOutput(
   input: unknown,
   options: {
     locale: ResumeLocale
-    source: Extract<ResumeSource, 'paste' | 'upload'>
+    source: Extract<ResumeSource, 'paste' | 'upload' | 'boss'>
   }
 ): ResumeData {
   return normalizeTaskResume(input, options)

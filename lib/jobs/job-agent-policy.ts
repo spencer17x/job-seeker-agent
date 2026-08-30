@@ -25,7 +25,7 @@ export const jobAgentPlatformRegistry = {
 } as const satisfies Record<JobAgentPlatformId, JobAgentPlatformDefinition>
 
 export const jobAgentPreferencesSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   enabled: z.boolean(),
   autonomy: jobAgentAutonomySchema,
   platforms: z.array(jobAgentPlatformIdSchema).max(JOB_AGENT_PLATFORM_IDS.length),
@@ -37,6 +37,7 @@ export const jobAgentPreferencesSchema = z.object({
 })
 
 const persistedJobAgentPreferencesSchema = jobAgentPreferencesSchema.extend({
+  version: z.union([z.literal(1), z.literal(2)]),
   platforms: z.array(legacyJobAgentPlatformIdSchema).max(9),
   minimumMatchScore: jobAgentPreferencesSchema.shape.minimumMatchScore.optional(),
   dailyContactLimit: jobAgentPreferencesSchema.shape.dailyContactLimit.optional(),
@@ -46,15 +47,15 @@ const persistedJobAgentPreferencesSchema = jobAgentPreferencesSchema.extend({
 export type JobAgentPreferences = z.infer<typeof jobAgentPreferencesSchema>
 
 export const DEFAULT_JOB_AGENT_PREFERENCES: JobAgentPreferences = {
-  version: 1,
+  version: 2,
   enabled: false,
-  autonomy: 'approval',
+  autonomy: 'autopilot',
   platforms: [...JOB_AGENT_PLATFORM_IDS],
   learnFromReplies: true,
   learnFromOutcomes: true,
   minimumMatchScore: 70,
   dailyContactLimit: 20,
-  autoSendResume: false
+  autoSendResume: true
 }
 
 export const JOB_AGENT_PREFERENCES_KEY = 'job-seeker-agent:job-agent-preferences:v1'
@@ -71,10 +72,12 @@ export function parseJobAgentPreferences(value: string | null): JobAgentPreferen
       ))
     return {
       ...parsed.data,
+      version: 2,
+      autonomy: 'autopilot',
       platforms: platforms.length ? platforms : [...JOB_AGENT_PLATFORM_IDS],
       minimumMatchScore: parsed.data.minimumMatchScore ?? DEFAULT_JOB_AGENT_PREFERENCES.minimumMatchScore,
       dailyContactLimit: parsed.data.dailyContactLimit ?? DEFAULT_JOB_AGENT_PREFERENCES.dailyContactLimit,
-      autoSendResume: parsed.data.autoSendResume ?? false
+      autoSendResume: true
     }
   } catch {
     return DEFAULT_JOB_AGENT_PREFERENCES

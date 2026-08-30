@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  BriefcaseBusiness,
   ClipboardPaste,
   FileText,
   LoaderCircle,
@@ -48,6 +49,7 @@ import {
   validateParsedResumeTaskOutput,
   type DemoResumeTaskInput
 } from '@/lib/agent/resume-tasks'
+import { collectBossResumeSnapshot } from '@/lib/jobs/browser-agent-protocol'
 import type { AppId } from '@/lib/desktop/types'
 import type { Locale } from '@/i18n/routing'
 import { parseRetryAfter } from '@/lib/retry-after'
@@ -59,7 +61,7 @@ import {
   type ResumeSource
 } from '@/lib/resume-model'
 
-type SourceMode = 'paste' | 'upload' | 'generate'
+type SourceMode = 'boss' | 'paste' | 'upload' | 'generate'
 type Seniority = 'junior' | 'mid' | 'senior' | 'lead'
 type PendingAction = 'parse' | 'upload' | 'generate' | null
 type CooldownBucket = 'extract' | 'parse' | 'generate'
@@ -67,7 +69,7 @@ type Cooldowns = Record<CooldownBucket, number>
 
 type CloudResumeResult = { data?: unknown; model?: unknown }
 
-const SOURCE_MODES: SourceMode[] = ['paste', 'upload', 'generate']
+const SOURCE_MODES: SourceMode[] = ['boss', 'paste', 'upload', 'generate']
 const EMPTY_COOLDOWNS: Cooldowns = { extract: 0, parse: 0, generate: 0 }
 const LOCALIZED_ERROR_CODES = new Set([
   'AI_PUBLIC_ACCESS_DISABLED',
@@ -124,6 +126,8 @@ export function ResumeStudioApp({
   } = useResumeDraft()
   const [mode, setMode] = useState<SourceMode>('paste')
   const [pasteText, setPasteText] = useState('')
+  const [bossResumeText, setBossResumeText] = useState('')
+  const [bossResumeReady, setBossResumeReady] = useState(false)
   const [uploadText, setUploadText] = useState('')
   const [uploadName, setUploadName] = useState('')
   const [uploadReady, setUploadReady] = useState(false)
@@ -148,6 +152,7 @@ export function ResumeStudioApp({
   const requestGenerationRef = useRef(0)
   const activeControllerRef = useRef<AbortController | null>(null)
   const tabRefs = useRef<Record<SourceMode, HTMLButtonElement | null>>({
+    boss: null,
     paste: null,
     upload: null,
     generate: null
@@ -235,7 +240,7 @@ export function ResumeStudioApp({
 
   async function parseResume(
     text: string,
-    source: Extract<ResumeSource, 'paste' | 'upload'>,
+    source: Extract<ResumeSource, 'paste' | 'upload' | 'boss'>,
     signal: AbortSignal
   ) {
     const request = { text, locale, source }
@@ -291,6 +296,53 @@ export function ResumeStudioApp({
       const result = await parseResume(text, 'paste', operation.controller.signal)
       if (!isCurrentRequest(operation.generation, operation.controller)) return
       await createDraftWithEvidence(result.data, { source: 'paste' })
+      if (!isCurrentRequest(operation.generation, operation.controller)) return
+      setModel(result.model)
+    } catch (requestError) {
+      if (isCurrentRequest(operation.generation, operation.controller)) {
+        setError(localizedRequestError(requestError, t('parseError')))
+      }
+    } finally {
+      finishOperation(operation.generation, operation.controller)
+    }
+  }
+
+  async function collectFromBoss() {
+    const operation = beginOperation('parse')
+    setBossResumeText('')
+    setBossResumeReady(false)
+    try {
+      const response = await collectBossResumeSnapshot({
+        window,
+        timeoutMs: 15_000
+      })
+      if (!isCurrentRequest(operation.generation, operation.controller)) return
+      if (!response.ok || !response.resumeSnapshot) throw new TypeError('BOSS resume unavailable')
+      setBossResumeText(response.resumeSnapshot.text)
+      setBossResumeReady(true)
+    } catch {
+      if (isCurrentRequest(operation.generation, operation.controller)) {
+        setError(t('bossImportError'))
+      }
+    } finally {
+      finishOperation(operation.generation, operation.controller)
+    }
+  }
+
+  async function importBossResume() {
+    const text = bossResumeText.trim()
+    if (!bossResumeReady || !text) {
+      setError(t('sourceRequired'))
+      return
+    }
+    const operation = beginOperation('parse')
+    try {
+      const result = await parseResume(text, 'boss', operation.controller.signal)
+      if (!isCurrentRequest(operation.generation, operation.controller)) return
+      await createDraftWithEvidence(result.data, {
+        source: 'boss',
+        name: t('bossDraftName')
+      })
       if (!isCurrentRequest(operation.generation, operation.controller)) return
       setModel(result.model)
     } catch (requestError) {
@@ -517,7 +569,7 @@ export function ResumeStudioApp({
 
   async function createDraftWithEvidence(
     data: ResumeData,
-    options: { source: Extract<ResumeSource, 'paste' | 'upload'>; name?: string }
+    options: { source: Extract<ResumeSource, 'paste' | 'upload' | 'boss'>; name?: string }
   ) {
     const importedData = normalizeResumeData(data, { source: options.source, locale })
     const draftId = createDraft(importedData, options)
@@ -603,6 +655,17 @@ export function ResumeStudioApp({
         <header className="resume-studio__toolbar">
           <div role="tablist" aria-label={t('sourceMode')}>
             <ModeTab
+              id={`${tabGroupId}-tab-boss`}
+              panelId={`${tabGroupId}-panel-boss`}
+              mode="boss"
+              current={mode}
+              label={t('bossImport')}
+              icon={<BriefcaseBusiness size={15} />}
+              buttonRef={(button) => { tabRefs.current.boss = button }}
+              onKeyDown={handleTabKey}
+              onSelect={selectMode}
+            />
+            <ModeTab
               id={`${tabGroupId}-tab-paste`}
               panelId={`${tabGroupId}-panel-paste`}
               mode="paste"
@@ -641,6 +704,34 @@ export function ResumeStudioApp({
             progress: Math.round(downloadProgress * 100)
           })}</p> : null}
         </header>
+
+        <div
+          className="resume-studio__editor"
+          id={`${tabGroupId}-panel-boss`}
+          role="tabpanel"
+          aria-labelledby={`${tabGroupId}-tab-boss`}
+          hidden={mode !== 'boss'}
+          tabIndex={mode === 'boss' ? 0 : -1}
+        >
+          <div className="resume-studio__sample-card">
+            <div><strong>{t('bossImportTitle')}</strong><p>{t('bossImportDescription')}</p></div>
+            <button type="button" disabled={busy} onClick={() => void collectFromBoss()}><BriefcaseBusiness aria-hidden="true" size={16} />{t('bossCollect')}</button>
+          </div>
+          <label htmlFor="studio-boss-resume-text">{t('bossExtractedText')}</label>
+          <textarea
+            id="studio-boss-resume-text"
+            value={bossResumeText}
+            disabled={busy}
+            maxLength={40_000}
+            placeholder={t('bossExtractedPlaceholder')}
+            onChange={(event) => setBossResumeText(event.target.value)}
+          />
+          <button type="button" className="resume-studio__primary" disabled={busy || !bossResumeReady || !bossResumeText.trim()} onClick={() => void importBossResume()}>
+            {pending === 'parse' ? <LoaderCircle className="resume-studio__spinner" aria-hidden="true" size={16} /> : <BriefcaseBusiness aria-hidden="true" size={16} />}
+            {pending === 'parse' ? t('creating') : t('bossCreateDraft')}
+          </button>
+          {mode === 'boss' && error ? <p className="resume-studio__error" role="alert">{error}</p> : null}
+        </div>
 
         <div
           className="resume-studio__editor"

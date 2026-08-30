@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl'
 import type { IndexedDbDomainStore } from '@/lib/agent/domain-store'
 import { createJobInputFingerprint } from '@/lib/jobs/job-domain'
 import type { JobAgentPreferences } from '@/lib/jobs/job-agent-policy'
+import { canExecuteJobAgentAction } from '@/lib/jobs/job-agent-policy'
 import {
   approveBossConversationMessage,
   ensureBossFollowUpDrafts,
@@ -22,6 +23,7 @@ import {
   collectBossConversationSignals,
   diagnoseBossBrowserAdapter,
   inspectBossBrowserConversation,
+  openBossBrowserConversation,
   sendBossBrowserMessage,
   sendBossResumeAttachment
 } from '@/lib/jobs/browser-agent-protocol'
@@ -44,6 +46,7 @@ export function useBossConversationController(input: ControllerInput) {
   translationsRef.current = t
   const [busyMessageId, setBusyMessageId] = useState('')
   const [busyResumeThreadId, setBusyResumeThreadId] = useState('')
+  const drainingRef = useRef(false)
 
   const hasAutomaticContactCapacity = useCallback(async () => {
     const current = inputRef.current
@@ -113,28 +116,84 @@ export function useBossConversationController(input: ControllerInput) {
   const tryAutopilotMessage = useCallback(async (message: BossConversationMessage) => {
     const current = inputRef.current
     try {
-      if (!await hasAutomaticContactCapacity()) return
+      if (!canExecuteJobAgentAction({
+        action: 'send-message',
+        preferences: current.preferences,
+        connectorAuthorized: true
+      })) return false
+      if (!await hasAutomaticContactCapacity()) return false
       const thread = await current.store.get('bossConversationThreads', message.threadId)
-      if (!thread) return
-      const response = await inspectBossBrowserConversation({ window, timeoutMs: 3_000 })
-      if (!response.ok || !response.recipient) return
-      const verified = verifyBossConversationRecipient({
-        thread,
-        ...response.recipient,
-        now: new Date().toISOString()
-      })
-      await current.store.put('bossConversationThreads', verified)
-      const approved = await approveBossConversationMessage({
-        store: current.store,
-        threadId: verified.id,
-        messageId: message.id,
-        now: new Date().toISOString()
-      })
-      await sendApproved(message.id, approved, verified)
+      if (!thread) return false
+      const application = await current.store.get('applicationRecords', thread.applicationId)
+      const posting = application
+        ? await current.store.get('jobPostings', application.postingId)
+        : undefined
+      if (!posting) return false
+      let verified = thread
+      if (
+        !verified.recipientFingerprint
+        || !verified.platformRecipientId
+        || !verified.conversationId
+        || !verified.recipientName
+      ) {
+        const response = await openBossBrowserConversation({
+          window,
+          url: posting.canonicalUrl,
+          title: posting.title,
+          company: posting.company,
+          timeoutMs: 20_000
+        })
+        if (response.attention) {
+          current.setNotice(translationsRef.current(`jobAgent.userAttention.${response.attention}`))
+          return false
+        }
+        if (!response.ok || !response.recipient) return false
+        verified = verifyBossConversationRecipient({
+          thread,
+          ...response.recipient,
+          now: new Date().toISOString()
+        })
+        await current.store.put('bossConversationThreads', verified)
+      }
+      const persistedMessage = await current.store.get('bossConversationMessages', message.id)
+      if (!persistedMessage || !['awaiting-approval', 'approved'].includes(persistedMessage.status)) return false
+      const approved = persistedMessage.status === 'approved'
+        ? persistedMessage
+        : await approveBossConversationMessage({
+            store: current.store,
+            threadId: verified.id,
+            messageId: persistedMessage.id,
+            now: new Date().toISOString()
+          })
+      await sendApproved(approved.id, approved, verified)
+      return true
     } catch {
-      // The draft remains reviewable when the exact BOSS conversation is not active.
+      // The draft remains queued when the exact job conversation cannot be verified.
+      return false
     }
   }, [hasAutomaticContactCapacity, sendApproved])
+
+  const drainAutopilotQueue = useCallback(async () => {
+    const current = inputRef.current
+    if (
+      drainingRef.current
+      || !current.preferences.enabled
+      || current.preferences.autonomy !== 'autopilot'
+    ) return
+    drainingRef.current = true
+    try {
+      const messages = (await current.store.list('bossConversationMessages'))
+        .filter((message) => ['awaiting-approval', 'approved'].includes(message.status))
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+      for (const message of messages) {
+        if (!inputRef.current.preferences.enabled) break
+        if (!await hasAutomaticContactCapacity()) break
+        if (!await tryAutopilotMessage(message)) break
+      }
+    } finally {
+      drainingRef.current = false
+    }
+  }, [hasAutomaticContactCapacity, tryAutopilotMessage])
 
   const sendRequestedResume = useCallback(async (thread: BossConversationThread) => {
     const current = inputRef.current
@@ -149,19 +208,49 @@ export function useBossConversationController(input: ControllerInput) {
     current.setError('')
     try {
       const application = await current.store.get('applicationRecords', thread.applicationId)
+      const posting = application
+        ? await current.store.get('jobPostings', application.postingId)
+        : undefined
       const variant = application?.resumeVariantId
         ? await current.store.get('resumeVariants', application.resumeVariantId)
         : undefined
-      if (!variant) throw new TypeError('Job-specific resume variant unavailable')
-      const diagnosticResponse = await diagnoseBossBrowserAdapter({ window })
-      const conversationFingerprint = createJobInputFingerprint(thread.conversationId)
-      const chatDiagnostic = diagnosticResponse.diagnostics?.find((item) => (
+      if (!variant || !posting) throw new TypeError('Job-specific resume variant unavailable')
+      let verifiedThread = thread
+      let diagnosticResponse = await diagnoseBossBrowserAdapter({ window })
+      const conversationFingerprint = createJobInputFingerprint(verifiedThread.conversationId)
+      let chatDiagnostic = diagnosticResponse.diagnostics?.find((item) => (
         item.pageKind === 'chat'
         && item.ready.conversation
         && item.conversationFingerprint === conversationFingerprint
       ))
       if (chatDiagnostic?.counts.pdfInputs !== 1) {
-        throw new TypeError('No unique BOSS PDF resume input is available')
+        const opened = await openBossBrowserConversation({
+          window,
+          url: posting.canonicalUrl,
+          title: posting.title,
+          company: posting.company,
+          timeoutMs: 20_000
+        })
+        if (opened.attention) {
+          current.setNotice(t(`jobAgent.userAttention.${opened.attention}`))
+          return
+        }
+        if (!opened.ok || !opened.recipient) throw new TypeError('BOSS conversation unavailable')
+        verifiedThread = verifyBossConversationRecipient({
+          thread,
+          ...opened.recipient,
+          now: new Date().toISOString()
+        })
+        await current.store.put('bossConversationThreads', verifiedThread)
+        diagnosticResponse = await diagnoseBossBrowserAdapter({ window })
+        chatDiagnostic = diagnosticResponse.diagnostics?.find((item) => (
+          item.pageKind === 'chat'
+          && item.ready.conversation
+          && item.conversationFingerprint === createJobInputFingerprint(verifiedThread.conversationId!)
+        ))
+        if (chatDiagnostic?.counts.pdfInputs !== 1) {
+          throw new TypeError('No unique BOSS PDF resume input is available')
+        }
       }
       const mimeType = 'application/pdf' as const
       const artifactModule = await import('@/lib/resume-pdf')
@@ -171,7 +260,7 @@ export function useBossConversationController(input: ControllerInput) {
       const contentFingerprint = createJobInputFingerprint(bytesBase64)
       const sentThread = await executeBossResumeAttachment({
         store: current.store,
-        thread,
+        thread: verifiedThread,
         fileName,
         bytesBase64,
         byteLength: bytes.byteLength,
@@ -187,10 +276,10 @@ export function useBossConversationController(input: ControllerInput) {
             mimeType,
             contentFingerprint,
             recipient: {
-              platformRecipientId: thread.platformRecipientId!,
-              conversationId: thread.conversationId!,
-              recipientName: thread.recipientName!,
-              ...(thread.recipientTitle ? { recipientTitle: thread.recipientTitle } : {})
+              platformRecipientId: verifiedThread.platformRecipientId!,
+              conversationId: verifiedThread.conversationId!,
+              recipientName: verifiedThread.recipientName!,
+              ...(verifiedThread.recipientTitle ? { recipientTitle: verifiedThread.recipientTitle } : {})
             }
           })
           if (!response.ok || !response.resumeReceipt) throw new TypeError('BOSS resume receipt unavailable')
@@ -300,7 +389,8 @@ export function useBossConversationController(input: ControllerInput) {
     verifyAndApprove,
     sendApproved,
     sendRequestedResume,
-    syncSignals
+    syncSignals,
+    drainAutopilotQueue
   }
 }
 

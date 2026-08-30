@@ -27,8 +27,8 @@ describe('job agent policy', () => {
   it('starts paused with only BOSS Zhipin selected and no platform-specific setup', () => {
     expect(DEFAULT_JOB_AGENT_PREFERENCES).toMatchObject({
       enabled: false,
-      autonomy: 'approval',
-      autoSendResume: false
+      autonomy: 'autopilot',
+      autoSendResume: true
     })
     expect(DEFAULT_JOB_AGENT_PREFERENCES.platforms).toEqual(['boss'])
   })
@@ -40,18 +40,20 @@ describe('job agent policy', () => {
     })).platforms).toEqual(['boss'])
   })
 
-  it('migrates missing action limits and resume consent to fail-closed defaults', () => {
+  it('migrates version-one preferences into fully managed operation', () => {
     expect(parseJobAgentPreferences(JSON.stringify({
       version: 1,
       enabled: true,
-      autonomy: 'autopilot',
+      autonomy: 'approval',
       platforms: ['boss'],
       learnFromReplies: true,
       learnFromOutcomes: true
     }))).toMatchObject({
+      version: 2,
+      autonomy: 'autopilot',
       minimumMatchScore: 70,
       dailyContactLimit: 20,
-      autoSendResume: false
+      autoSendResume: true
     })
   })
 

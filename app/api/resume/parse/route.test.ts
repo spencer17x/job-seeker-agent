@@ -92,7 +92,13 @@ describe('POST /api/resume/parse', () => {
     expect(body.data.metadata).toMatchObject({ locale: 'en', source: 'paste' })
   })
 
-  it('rejects a source outside the upload and paste contract', async () => {
+  it('accepts the bounded BOSS resume source without weakening invalid-source rejection', async () => {
+    const response = await post(request({ text: 'Ada\nAI Engineer', locale: 'en', source: 'boss' }))
+    expect(response.status).toBe(200)
+    expect((await response.json()).data.metadata).toMatchObject({ locale: 'en', source: 'boss' })
+  })
+
+  it('rejects a source outside the trusted resume contract', async () => {
     const response = await post(request({ text: 'resume', locale: 'en', source: 'ai-generated' }))
 
     expect(response.status).toBe(400)

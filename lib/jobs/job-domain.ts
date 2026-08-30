@@ -176,6 +176,7 @@ export const jobPostingSchema = z.object({
   employmentType: employmentTypeSchema.optional(),
   compensation: jobCompensationSchema.optional(),
   sourceUpdatedAt: timestampSchema.optional(),
+  detailFetchedAt: timestampSchema.optional(),
   firstSeenAt: timestampSchema,
   lastCheckedAt: timestampSchema,
   status: z.enum(JOB_POSTING_STATUSES),

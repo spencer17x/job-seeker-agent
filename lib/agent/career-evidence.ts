@@ -7,7 +7,7 @@ import {
 } from './domain-store'
 import { transitionOptimizationRun, type OptimizationRun } from './optimization-run'
 import { ACTIVE_WORKFLOW_CHANGED_EVENT } from './workflow-persistence'
-import type { ResumeData, ResumeSource } from '@/lib/resume-model'
+import { isTrustedResumeSource, type ResumeData, type ResumeSource } from '@/lib/resume-model'
 
 export type CareerEvidenceImport = {
   source: EvidenceSource
@@ -41,7 +41,6 @@ type CareerEvidenceStore = Pick<
 
 type FactCandidate = Pick<CareerFact, 'context' | 'kind' | 'tags' | 'text'>
 
-const TRUSTED_IMPORT_SOURCES = new Set<ResumeSource>(['paste', 'upload'])
 const MAX_LABEL_LENGTH = 500
 const MAX_TEXT_LENGTH = 20_000
 const MAX_TAG_LENGTH = 120
@@ -417,7 +416,7 @@ function normalizeContext(context: FactCandidate['context']) {
 }
 
 function assertTrustedSource(source: ResumeSource) {
-  if (!TRUSTED_IMPORT_SOURCES.has(source)) {
+  if (!isTrustedResumeSource(source)) {
     throw new CareerEvidenceImportError(
       'UNTRUSTED_RESUME_SOURCE',
       `Resume source ${source} cannot create career evidence`

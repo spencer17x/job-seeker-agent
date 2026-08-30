@@ -4,6 +4,7 @@ import { Printer } from 'lucide-react'
 import { useLocale, useTranslations } from 'next-intl'
 import { useEffect, useMemo, useState } from 'react'
 import { useResumeDraft } from '@/components/resume-draft-provider'
+import { isTrustedResumeSource } from '@/lib/resume-model'
 import type { Locale } from '@/i18n/routing'
 import {
   createDomainStore,
@@ -28,7 +29,7 @@ export function ClassicResumeApp({
   const locale = useLocale() as Locale
   const t = useTranslations('classic')
   const { activeDraft, activeResume } = useResumeDraft()
-  const hasVerifiedDraft = activeDraft?.source === 'paste' || activeDraft?.source === 'upload'
+  const hasVerifiedDraft = isTrustedResumeSource(activeDraft?.source)
   const sourceDraftId = hasVerifiedDraft ? activeDraft.id : undefined
   const [loadedReview, setLoadedReview] = useState<ReviewVariants & { sourceDraftId: string }>({
     sourceDraftId: '', variants: [], runs: []

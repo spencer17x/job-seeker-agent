@@ -18,6 +18,22 @@ describe('job goal description', () => {
     })
   })
 
+  it('parses the configured 45K-60K Hangzhou AI search without losing outsourcing exclusion', () => {
+    expect(analyzeJobGoalDescription(
+      '想在杭州找全职 AI Agent 或 AI 全栈岗位，月薪 45K-60K，接受远程，偏好 TypeScript、React 和 RAG，不考虑外包。'
+    )).toEqual({
+      titles: ['AI Agent工程师', 'AI全栈工程师', '全栈工程师'],
+      locations: ['杭州'],
+      minimumSalary: 45_000,
+      maximumSalary: 60_000,
+      experienceLevels: [],
+      workplaceTypes: ['remote'],
+      employmentTypes: ['full-time'],
+      preferredTerms: ['AI Agent', 'RAG', 'TypeScript', 'React', '远程'],
+      excludedTerms: ['外包']
+    })
+  })
+
   it('does not invent filters that were not stated', () => {
     expect(analyzeJobGoalDescription('希望找合适的机会')).toEqual({
       titles: [], locations: [], experienceLevels: [], workplaceTypes: [], employmentTypes: [], preferredTerms: [], excludedTerms: []

@@ -5,7 +5,12 @@ import { useLocale, useTranslations } from 'next-intl'
 import { careerEvidenceSourceId } from '@/lib/agent/career-evidence'
 import type { IndexedDbDomainStore } from '@/lib/agent/domain-store'
 import type { ResumeDraft } from '@/lib/resume-model'
-import { analyzeBossCandidateQueue, queueBossCandidates, upsertBossBrowserJobs } from '@/lib/jobs/boss-agent'
+import {
+  analyzeBossCandidateQueue,
+  prepareBossCandidateResumeVariants,
+  queueBossCandidates,
+  upsertBossBrowserJobs
+} from '@/lib/jobs/boss-agent'
 import { requestBossCandidateAnalysis } from '@/lib/jobs/boss-analysis-client'
 import {
   collectBossBrowserJobs,
@@ -84,7 +89,7 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
   const cancel = useCallback(() => controllerRef.current?.abort(), [])
   useEffect(() => cancel, [cancel])
 
-  const searchMarket = useCallback(async () => {
+  const searchMarket = useCallback(async (options: { managed?: boolean } = {}) => {
     const current = inputRef.current
     const t = translationsRef.current
     const activeDraft = current.activeDraft
@@ -152,7 +157,7 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
       const analysisResult = await analyzeBossCandidateQueue({
         store: current.store,
         sourceDraftId: activeDraft.id,
-        maximumCandidates: 3,
+        maximumCandidates: 10,
         signal: controller.signal,
         now: () => new Date().toISOString(),
         runAnalysis: (posting, signal) => requestBossCandidateAnalysis({
@@ -162,6 +167,15 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
           signal
         })
       })
+      if (options.managed || current.preferences.autonomy === 'autopilot') {
+        await prepareBossCandidateResumeVariants({
+          store: current.store,
+          sourceDraftId: activeDraft.id,
+          resume: activeDraft.data,
+          maximumCandidates: 50,
+          now: () => new Date().toISOString()
+        })
+      }
       const totals = result.summaries.reduce((summary, source) => ({
         added: summary.added + source.newCount,
         updated: summary.updated + source.updatedCount,
@@ -297,6 +311,7 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
           canonicalUrl: detail.url,
           applyUrl: detail.url,
           lastCheckedAt: now,
+          detailFetchedAt: now,
           contentHash: createJobInputFingerprint({
             title: posting.title,
             company: posting.company,
@@ -406,6 +421,19 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
     }
   }, [clipboardJobText])
 
+  const prepareManagedVariants = useCallback(async () => {
+    const current = inputRef.current
+    if (!current.activeDraft || !current.trustedDraft || current.preferences.autonomy !== 'autopilot') return
+    await prepareBossCandidateResumeVariants({
+      store: current.store,
+      sourceDraftId: current.activeDraft.id,
+      resume: current.activeDraft.data,
+      maximumCandidates: 50,
+      now: () => new Date().toISOString()
+    })
+    await current.reload()
+  }, [])
+
   const recommendationByPosting = useMemo(
     () => new Map(input.recommendations.map((item) => [item.postingId, item])),
     [input.recommendations]
@@ -435,7 +463,7 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
   ))
 
   return {
-    busySourceId, marketProgress, cancel, searchMarket, refreshSource, decide, analyzePosting,
+    busySourceId, marketProgress, cancel, searchMarket, refreshSource, decide, analyzePosting, prepareManagedVariants,
     filter, setFilter, selectedPostingId, setSelectedPostingId, visible,
     recommendationByPosting, applicationByPosting,
     selectedPosting, selectedRecommendation, officialSearchPlatforms,

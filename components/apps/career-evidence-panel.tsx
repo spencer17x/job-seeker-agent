@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl'
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { DomainStoreError, type CareerFact, type EvidenceSource } from '@/lib/agent/domain-store'
 import type { CareerEvidenceService } from '@/lib/agent/career-evidence'
-import type { ResumeDraft } from '@/lib/resume-model'
+import { isTrustedResumeSource, type ResumeDraft } from '@/lib/resume-model'
 
 type EvidenceState = {
   draftId: string
@@ -40,7 +40,7 @@ export function CareerEvidencePanel({
   const [editingFactId, setEditingFactId] = useState('')
   const [editingText, setEditingText] = useState('')
   const [retryPending, setRetryPending] = useState(false)
-  const isTrustedDraft = draft?.source === 'paste' || draft?.source === 'upload'
+  const isTrustedDraft = isTrustedResumeSource(draft?.source)
   const stateIsCurrent = Boolean(
     draft
     && state.draftId === draft.id
