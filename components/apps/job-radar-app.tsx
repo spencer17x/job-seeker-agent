@@ -29,14 +29,13 @@ import { useResumeDraft } from '@/components/resume-draft-provider'
 import { isTrustedResumeSource } from '@/lib/resume-model'
 import { ApplicationPipeline } from '@/components/apps/application-pipeline'
 import { ResumeVariantLibrary } from '@/components/apps/resume-variant-library'
-import { JobProcessBoard } from '@/components/apps/job-process-board'
+import { JobLifecycleCommandCenter } from '@/components/apps/job-lifecycle-command-center'
 import { JobHistoryLearningPanel } from '@/components/apps/job-history-learning-panel'
 import { useJobStrategyMemory } from '@/components/apps/use-job-strategy-memory'
 import { useApplicationController } from '@/components/apps/use-application-controller'
 import { useBossConversationController } from '@/components/apps/use-boss-conversation-controller'
 import { useJobSearchProfileController } from '@/components/apps/use-job-search-profile-controller'
 import { useJobDiscoveryController } from '@/components/apps/use-job-discovery-controller'
-import { JobAgentRuntimeStatus } from '@/components/apps/job-agent-runtime-status'
 import { buttonVariants } from '@/components/ui/button'
 import { CAREER_EVIDENCE_CHANGED_EVENT } from '@/lib/agent/career-evidence'
 import { ACTIVE_WORKFLOW_CHANGED_EVENT } from '@/lib/agent/workflow-persistence'
@@ -505,13 +504,6 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
     const timeout = window.setTimeout(() => { void conversationController.drainAutopilotQueue() }, 0)
     return () => window.clearTimeout(timeout)
   }, [browserAgentAvailable, conversationController.drainAutopilotQueue, managedMode, pendingMessages])
-  const applicationCounts = {
-    applied: applications.filter((item) => ['applied', 'interviewing', 'offered', 'rejected'].includes(item.status)).length,
-    viewed: applications.filter((item) => item.status !== 'saved').length,
-    conversations: conversationThreads.filter((item) => item.status === 'active').length,
-    interviews: applications.filter((item) => item.status === 'interviewing').length,
-    offers: applications.filter((item) => item.status === 'offered').length
-  }
   const postingByIdForActivity = new Map(postings.map((posting) => [posting.id, posting]))
   const applicationByIdForActivity = new Map(applications.map((application) => [application.id, application]))
   const threadByIdForActivity = new Map(conversationThreads.map((thread) => [thread.id, thread]))
@@ -569,33 +561,24 @@ export function JobRadarApp({ store: storeOverride, createAdapter = createSameOr
       <div className="job-workspace__sidebar-footer ml-auto flex shrink-0 gap-1 lg:mt-auto lg:ml-0 lg:grid lg:border-t lg:border-slate-200 lg:pt-4"><Link className={navLinkClass(workspaceSection === 'setup' || workspaceSection === 'preferences')} href="/jobs/setup" data-active={workspaceSection === 'setup' || workspaceSection === 'preferences'}><SlidersHorizontal size={17} aria-hidden="true" /><span>{t('workspace.nav.preferences')}</span></Link><Link className={navLinkClass(workspaceSection === 'profile')} href="/jobs/profile" data-active={workspaceSection === 'profile'} aria-label={activeDraft?.data.profile.name || t('workspace.candidate')}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-slate-900 text-xs font-semibold text-white">{activeDraft?.data.profile.name?.slice(0, 1) || 'R'}</span><strong className="hidden min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-sm lg:block">{activeDraft?.data.profile.name || t('workspace.candidate')}</strong></Link></div>
     </aside>
     <section className="job-workspace__main min-h-0 min-w-0 overflow-auto bg-slate-50">
-      <header className="job-workspace__topbar sticky top-[65px] z-10 flex min-h-16 items-center justify-between gap-4 border-b border-slate-200 bg-white/95 px-5 backdrop-blur lg:top-0 lg:min-h-20 lg:px-8"><h1 className="text-lg font-semibold tracking-tight text-slate-950">{t(`workspace.pageTitle.${workspaceSection}`)}</h1><div className="flex items-center gap-3"><span className="inline-flex items-center gap-2 text-sm text-slate-600" data-connected={browserAgentAvailable && !bossSessionRestricted}><i className={cn('size-2 rounded-full', browserAgentNeedsUpdate || bossSessionRestricted ? 'bg-amber-500' : browserAgentAvailable ? 'bg-emerald-500' : 'bg-slate-400')} />{browserAgentNeedsUpdate ? t('workspace.extensionUpdateRequired') : bossSessionRestricted ? t('workspace.accessRestricted') : browserAgentAvailable ? t('workspace.connected') : t('workspace.disconnected')}</span><Link className={buttonVariants({ variant: 'ghost', size: 'icon' })} href="/jobs/settings" aria-label={t('workspace.settings')}><Settings2 size={18} /></Link></div></header>
+      {workspaceSection !== 'overview' ? <header className="job-workspace__topbar sticky top-[65px] z-10 flex min-h-16 items-center justify-between gap-4 border-b border-slate-200 bg-white/95 px-5 backdrop-blur lg:top-0 lg:min-h-20 lg:px-8"><h1 className="text-lg font-semibold tracking-tight text-slate-950">{t(`workspace.pageTitle.${workspaceSection}`)}</h1><div className="flex items-center gap-3"><span className="inline-flex items-center gap-2 text-sm text-slate-600" data-connected={browserAgentAvailable && !bossSessionRestricted}><i className={cn('size-2 rounded-full', browserAgentNeedsUpdate || bossSessionRestricted ? 'bg-amber-500' : browserAgentAvailable ? 'bg-emerald-500' : 'bg-slate-400')} />{browserAgentNeedsUpdate ? t('workspace.extensionUpdateRequired') : bossSessionRestricted ? t('workspace.accessRestricted') : browserAgentAvailable ? t('workspace.connected') : t('workspace.disconnected')}</span><Link className={buttonVariants({ variant: 'ghost', size: 'icon' })} href="/jobs/settings" aria-label={t('workspace.settings')}><Settings2 size={18} /></Link></div></header> : null}
       {error ? <p className="job-workspace__alert" data-tone="error" role="alert">{error}</p> : null}
       {bossSessionRestricted ? <p className="job-workspace__alert" data-tone="error" role="status">{t('jobAgent.userAttention.access-restricted')}</p> : null}
       {notice ? <p className="job-workspace__alert" data-tone="success" role="status">{notice}</p> : null}
 
-      {workspaceSection === 'overview' ? <div className="job-overview">
-        <section className="job-overview__agent">
-          <div><span data-running={agentRunning} /><div><h2>{!agentSetupComplete ? t('workspace.setupRequired') : !agentPreferences.enabled ? t('workspace.agentPaused') : bossSessionRestricted ? t('workspace.agentSuspended') : browserAgentAvailable ? t('workspace.agentRunning') : t('workspace.agentReady')}</h2><p>{agentSetupComplete ? t('workspace.targetSummary', { titles: savedSearchProfile?.titles.slice(0, 2).join('、') || t('unknown'), location: savedSearchProfile?.locations[0] || t('unknown') }) : t('workspace.setupHelp')}</p></div></div>
-          <div>{!agentSetupComplete ? <Link className="job-button job-button--primary" href="/jobs/setup">{t('workspace.setupAction')}<ChevronRight size={16} /></Link> : <><button type="button" className="job-button job-button--secondary" onClick={toggleJobAgent}>{agentPreferences.enabled ? <Pause size={15} /> : <Play size={15} />}{agentPreferences.enabled ? t('workspace.pauseAgent') : t('workspace.startAgent')}</button><Link className="job-button job-button--primary" href={pendingRequirements > 0 ? '/jobs/resumes' : pendingMessages > 0 ? '/jobs/conversations' : '/jobs/opportunities'}>{t(managedMode ? 'workspace.viewProgress' : 'workspace.reviewTasks')}<ChevronRight size={16} /></Link></>}</div>
+      {workspaceSection === 'overview' ? <div className="job-overview job-overview--command">
+        <section className="job-command-hero">
+          <div className="job-command-hero__copy">
+            <h1><span className="sr-only">{t('workspace.pageTitle.overview')}</span><span aria-hidden="true">{t('workspace.commandCenterTitle', { count: postings.length })}</span></h1>
+            <div className="job-command-hero__status"><i data-running={agentRunning} /><h2>{!agentSetupComplete ? t('workspace.setupRequired') : !agentPreferences.enabled ? t('workspace.agentPaused') : bossSessionRestricted ? t('workspace.agentSuspended') : browserAgentAvailable ? t('workspace.agentRunning') : t('workspace.agentReady')}</h2><span>·</span><strong>{browserAgentNeedsUpdate ? t('workspace.extensionUpdateRequired') : bossSessionRestricted ? t('workspace.accessRestricted') : browserAgentAvailable ? t('workspace.connected') : t('workspace.disconnected')}</strong></div>
+            <p>{agentSetupComplete ? t('workspace.targetSummary', { titles: savedSearchProfile?.titles.slice(0, 2).join('、') || t('unknown'), location: savedSearchProfile?.locations[0] || t('unknown') }) : t('workspace.setupHelp')}</p>
+            <small>{t('workspace.commandCenterMeta', { time: formatActivityTime(postings[0]?.lastCheckedAt ?? browserJobRuntime?.lastCompletedAt, locale), date: new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', { dateStyle: 'medium' }).format(new Date()) })}</small>
+          </div>
+          <span className="job-command-hero__agent-mark" data-running={agentRunning}><Bot size={26} aria-hidden="true" /></span>
+          <div className="job-command-hero__actions">{!agentSetupComplete ? <Link className="job-button job-button--primary" href="/jobs/setup">{t('workspace.setupAction')}<ChevronRight size={16} /></Link> : <><button type="button" className="job-button job-button--secondary" onClick={toggleJobAgent}>{agentPreferences.enabled ? <Pause size={15} /> : <Play size={15} />}{agentPreferences.enabled ? t('workspace.pauseAgent') : t('workspace.startAgent')}</button><Link className="job-button job-button--primary" href={pendingRequirements > 0 ? '/jobs/resumes' : pendingMessages > 0 ? '/jobs/conversations' : '/jobs/opportunities'}>{t(managedMode ? 'workspace.viewProgress' : 'workspace.reviewTasks')}<ChevronRight size={16} /></Link></>}</div>
         </section>
-        <JobAgentRuntimeStatus runtime={browserJobRuntime} />
-        <div className="job-overview__columns">
-          <section><h2>{t('workspace.todayActivity')}</h2><div className="job-overview__timeline">
-            <Link href="/jobs/opportunities"><time>{formatActivityTime(postings[0]?.lastCheckedAt, locale)}</time><span><BriefcaseBusiness size={17} /></span><div><strong>{t('workspace.activityFound', { count: postings.length })}</strong><p>{t('workspace.activityFoundHelp')}</p></div><ChevronRight size={17} /></Link>
-            <Link href="/jobs/resumes"><time>{formatActivityTime(applications[0]?.updatedAt, locale)}</time><span><FileText size={17} /></span><div><strong>{t('workspace.activityResume', { count: packets.length })}</strong><p>{t('workspace.activityResumeHelp')}</p></div><ChevronRight size={17} /></Link>
-            <Link href="/jobs/conversations"><time>{formatActivityTime(conversationMessages[0]?.updatedAt, locale)}</time><span><MessageSquareText size={17} /></span><div><strong>{t('workspace.activityMessages', { count: conversationMessages.length })}</strong><p>{t('workspace.activityMessagesHelp')}</p></div><ChevronRight size={17} /></Link>
-            <Link href="/jobs/applications"><time>{formatActivityTime(applications.at(-1)?.updatedAt, locale)}</time><span><Send size={17} /></span><div><strong>{t('workspace.activityApplications', { count: applications.length })}</strong><p>{t('workspace.activityApplicationsHelp')}</p></div><ChevronRight size={17} /></Link>
-          </div></section>
-          <section><h2>{t(managedMode ? 'workspace.agentProcessing' : 'workspace.needsAttention')}</h2><div className="job-overview__tasks">
-            <Link href="/jobs/opportunities"><span data-tone="blue"><BriefcaseBusiness size={16} /></span><div><strong>{t(managedMode ? 'workspace.processingJobs' : 'workspace.taskReviewJobs')}</strong><p>{t(managedMode ? 'workspace.processingCount' : 'workspace.taskCount', { count: recommendations.filter((item) => (item.decision ?? 'new') === 'new').length })}</p></div><ChevronRight size={17} /></Link>
-            <Link href="/jobs/resumes"><span data-tone="amber"><FileText size={16} /></span><div><strong>{t(managedMode ? 'workspace.processingResumes' : 'workspace.taskResume')}</strong><p>{t(managedMode ? 'workspace.processingCount' : 'workspace.taskCount', { count: pendingRequirements })}</p></div><ChevronRight size={17} /></Link>
-            <Link href="/jobs/conversations"><span data-tone="red"><MessageSquareText size={16} /></span><div><strong>{t(managedMode ? 'workspace.monitoringConversations' : 'workspace.taskMessages')}</strong><p>{t(managedMode ? 'workspace.processingCount' : 'workspace.taskCount', { count: pendingMessages })}</p></div><ChevronRight size={17} /></Link>
-          </div></section>
-        </div>
-        <section className="job-overview__progress"><h2>{t('workspace.applicationProgress')}</h2><div>{(['applied', 'viewed', 'conversations', 'interviews', 'offers'] as const).map((key) => <article key={key}><strong>{applicationCounts[key]}</strong><span>{t(`workspace.progress.${key}`)}</span></article>)}</div></section>
-        <JobProcessBoard applications={applications} postings={postings} threads={conversationThreads} messages={conversationMessages} />
-        <JobHistoryLearningPanel simulation={historySimulation} memory={strategyMemory.memory} exportText={strategyMemory.exportText} busy={historyLearningBusy} onSimulate={() => void simulateHistoryLearning()} onApply={applyHistoryLearning} onDismiss={() => setHistorySimulation(null)} onSetEnabled={setStrategyMemoryEnabled} onClear={strategyMemory.clear} />
+        <JobLifecycleCommandCenter applications={applications} postings={postings} recommendations={recommendations} threads={conversationThreads} messages={conversationMessages} />
+        <details className="job-command-learning"><summary>{t('workspace.strategyLearning')}</summary><JobHistoryLearningPanel simulation={historySimulation} memory={strategyMemory.memory} exportText={strategyMemory.exportText} busy={historyLearningBusy} onSimulate={() => void simulateHistoryLearning()} onApply={applyHistoryLearning} onDismiss={() => setHistorySimulation(null)} onSetEnabled={setStrategyMemoryEnabled} onClear={strategyMemory.clear} /></details>
       </div> : null}
 
       {workspaceSection === 'opportunities' ? <div className="job-opportunities">

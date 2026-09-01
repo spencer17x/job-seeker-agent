@@ -1,43 +1,64 @@
-# Job Agent theme design QA
+# Job Agent lifecycle command center design QA
 
-- Source visual truth: `/var/folders/hl/d5hg44c53b958y88jbqlwdw00000gn/T/codex-clipboard-39d3385c-9e18-4c68-be19-2bad4346d3a6.png`
-- Browser-rendered implementation: `/tmp/job-agent-theme-implementation.png`
-- Side-by-side comparison: `/tmp/job-agent-theme-comparison.png`
-- Viewport: 1440 × 634 CSS px in the user-selected Chrome browser
-- Source pixels: 2880 × 1622; normalized from the application viewport to 1440 × 634 for comparison
-- Implementation pixels: 1440 × 634; browser-reported device pixel ratio 2, normalized by the browser capture
-- State: Chinese Job Agent overview, Agent running, BOSS connected. The document root was still set to dark while the Job Agent light-theme boundary was verified.
+- Source visual truth: `/Users/17a/projects/job-seeker-agent/docs/design/job-agent-command-center-reference.png`
+- Browser-rendered implementation: `/Users/17a/projects/job-seeker-agent/docs/design/job-agent-command-center-implementation.png`
+- Full-view comparison: `/Users/17a/projects/job-seeker-agent/docs/design/job-agent-command-center-comparison.png`
+- Focused top comparison: `/Users/17a/projects/job-seeker-agent/docs/design/job-agent-command-center-focus-top.png`
+- Focused lifecycle-table comparison: `/Users/17a/projects/job-seeker-agent/docs/design/job-agent-command-center-focus-table.png`
+- Mobile evidence: `/Users/17a/projects/job-seeker-agent/docs/design/job-agent-command-center-mobile.png`
+- Viewport: 1487 × 1058 CSS px in Chrome for the desktop comparison; 390 × 844 CSS px for the mobile check.
+- Source pixels: 1487 × 1058.
+- Implementation pixels: 1487 × 1058. The explicit Chrome viewport and saved implementation pixels match the source 1:1, so no density resampling was required before comparison.
+- State: Chinese Job Agent overview using live local data. The implementation shows 101 discovered roles, Agent paused, and BOSS connected; the source mock shows 19 roles and Agent running. These are intentional live-state differences, not visual substitutions.
 
 ## Full-view comparison evidence
 
-The left side of `/tmp/job-agent-theme-comparison.png` is the reported mixed-theme state; the right side is the revised implementation. The sidebar and top bar remain visually stable while the overview background, Agent card, runtime metrics, activity list, task list, dividers, buttons, and text now use the same light neutral and blue-accent system.
+`job-agent-command-center-comparison.png` places the selected concept and the final Chrome capture on one canvas at equal size. Both use the same 240 px navigation rail, full-width status hero, six-stage lifecycle, three primary opportunity rows, white surface, cobalt action color, emerald verified states, fine dividers, and low-elevation treatment. The implementation preserves real job titles and states instead of replacing them with concept data.
 
-## Focused region comparison
+## Focused region comparison evidence
 
-A separate crop was not needed. The reported defect affects the two largest content regions, and both their foreground/background contrast and their boundaries are clearly visible in the normalized full-view comparison. The screen contains no raster product assets whose crop or fidelity requires a separate close-up.
+- `job-agent-command-center-focus-top.png` verifies the brand rail, headline hierarchy, connection state, Agent mark, actions, stage icons, counts, connector arrows, and progress rail.
+- `job-agent-command-center-focus-table.png` verifies the row count, row height, typography, column alignment, semantic status colors, separators, and disclosure affordances.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: existing Chinese system font stack, weights, wrapping, and hierarchy are preserved. Primary and muted text now render against light surfaces with clear contrast.
-- Spacing and layout rhythm: the existing shell proportions are preserved. Content now uses a 24 px page inset, 20 px section rhythm, 12 px card radii, and subtle card elevation consistently.
-- Colors and visual tokens: Job Agent now owns an explicit light token boundary (`slate-50` canvas, white surfaces, `slate-900` foreground, `slate-500` muted text, blue primary, emerald success). A global dark preference no longer leaks into this workspace.
-- Image quality and asset fidelity: no raster or custom decorative image assets are present. Existing Lucide interface icons remain sharp and consistent.
-- Copy and content: labels and live Agent data are unchanged. Count and timestamp differences from the source are expected live-data changes, not design drift.
+- Fonts and typography: the implementation uses Inter with Noto Sans SC/PingFang fallbacks, a 27–36 px responsive display heading, 14 px lifecycle labels, and 12–14 px row text. Weight, truncation, line height, and Chinese wrapping match the concept hierarchy while retaining accessible live strings.
+- Spacing and layout rhythm: the 240 px sidebar, 236 px hero, six equal lifecycle tracks, 146 px rows, and three-row overview reproduce the source proportions. Lightweight row separators replace nested cards, and detail disclosure expands without shifting unrelated controls.
+- Colors and visual tokens: warm white/white surfaces, ink foreground, slate dividers, cobalt primary, and emerald verified states map directly to workspace tokens. No gradients or glass effects were introduced.
+- Image quality and asset fidelity: the screen has no photographic or illustrative assets. Existing Lucide line icons are the closest installed family to the source icons and remain sharp at native size. Source company logos were concept-only data; the implementation deliberately uses a neutral document icon because the live records do not carry verified brand assets.
+- Copy and content: all fixed copy exists in Chinese and English. Live counts, companies, targets, timestamps, BOSS state, and application stages remain sourced from the local domain store.
+- Accessibility and motion: navigation, disclosure buttons, headings, table roles, focus rings, 44 px primary controls, and mobile cards remain keyboard/touch reachable. Entrance, stage, row, disclosure, and status transitions are disabled under `prefers-reduced-motion`.
 
 ## Comparison history
 
-1. Earlier P1: the light sidebar/top bar surrounded a dark overview whose inherited foreground color made headings and values nearly unreadable.
-2. Fix: removed the legacy dark workspace override, added an explicit Job Agent light-theme boundary for both `--jw-*` and embedded `--theme-*` tokens, and aligned card/background/button styling with the Tailwind/shadcn shell.
-3. Post-fix evidence: Chrome computed styles report `rgb(248, 250, 252)` for the workspace background, `#fff` for surfaces, and `rgb(15, 23, 42)` for foreground text even while `documentElement.dataset.theme` is `dark`. Setup, opportunities, resumes, conversations, applications, interviews, and preferences were also checked in Chrome.
-
-## Findings
-
-No actionable P0, P1, or P2 visual differences remain for the requested theme-consistency fix.
+1. Earlier P2 — lifecycle rows were too dense: five rows at 120 px made the implementation read like a compact admin table instead of the selected command center.
+   Fix: limited the overview to three live rows, increased row height to 146 px, and moved strategy learning behind a lightweight disclosure.
+   Post-fix evidence: the final full-view and table-focused comparisons show the same three-row rhythm as the source.
+2. Earlier P2 — table copy was optically smaller and the stage strip lacked the source connector arrows.
+   Fix: raised job/status/detail type to 12–14 px and added icon-library chevrons between lifecycle stages.
+   Post-fix evidence: the top and table focused comparisons show aligned hierarchy and visible stage direction.
+3. Earlier P2 — the mobile view exposed a horizontally compressed desktop table.
+   Fix: converted lifecycle records to two-column mobile cards, kept the stage rail independently scrollable, preserved 44 px actions, and hid the desktop-only profile control.
+   Post-fix evidence: `job-agent-command-center-mobile.png`; the mobile Playwright route also passes its no-horizontal-overflow assertion.
+4. Earlier P2 — development hot reload retained stale missing-message errors in the Next issue overlay.
+   Fix: completed both locale bundles and performed a clean hard reload.
+   Post-fix evidence: the final implementation screenshot contains no issue overlay. Browser logs were checked; historical HMR entries predate the final reload and did not recur.
 
 ## Interaction and runtime checks
 
-- Sidebar navigation was exercised from Overview to Opportunities and back.
-- All seven workspace sections plus setup/preferences rendered with the light boundary.
-- Chrome reported no application console errors. Warnings observed came from an unrelated installed wallet extension.
+- Overview → Opportunities → Overview navigation works without an RSC navigation request.
+- A lifecycle row expands and collapses its bounded audit detail with correct accessible labels.
+- Desktop and mobile routes render without document-level horizontal overflow.
+- `pnpm check` passed: typecheck, 116 test files / 1029 tests, and production build.
+- Relevant Playwright coverage passed: 11 tests passed and 9 intentionally project-scoped tests skipped across desktop and mobile.
+
+## Findings
+
+No actionable P0, P1, or P2 visual differences remain.
+
+## Follow-up polish
+
+- [P3] The implementation retains Resume Tasks, Interviews, and Agent Activity as additional navigation entries because they are real product routes, while the concept showed only five entries.
+- [P3] Verified company brand assets could replace the neutral document icon later if the product adds a trusted logo source.
 
 final result: passed

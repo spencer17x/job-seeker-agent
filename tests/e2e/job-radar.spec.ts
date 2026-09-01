@@ -118,6 +118,7 @@ test('manages strategy memory independently from career and application data', a
   })))
   await page.goto('/en/jobs')
 
+  await page.getByText('The Agent keeps improving its strategy from outcomes').click()
   await expect(page.getByText('1 applied versions')).toBeVisible()
   await expect(page.getByRole('link', { name: 'Export memory' })).toHaveAttribute('download', 'job-seeker-agent-strategy-memory.json')
   await page.getByRole('button', { name: 'Disable learning' }).click()
@@ -302,7 +303,7 @@ test('keeps the bilingual Job Agent route usable without horizontal overflow on 
   await page.goto('/zh/jobs')
   await expect(page.getByRole('heading', { name: '求职概览', level: 1 })).toBeVisible()
   await expect(page.getByRole('navigation', { name: '求职工作区导航' })).toBeVisible()
-  await page.getByRole('link', { name: '岗位', exact: true }).click()
+  await page.getByRole('link', { name: '机会', exact: true }).click()
   await expect(page.getByText('请先导入或粘贴可信简历，再进行岗位匹配。')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0)
 })
