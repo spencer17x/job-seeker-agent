@@ -86,6 +86,19 @@ whole-database write scope.
 
 Supported locales are `en` and `zh`.
 
+The Job Agent workspace keeps Career Profile, Job Preferences, and Settings
+reachable on desktop and mobile. Opportunities can be searched locally by title,
+company, or location, with 20 roles per page and filters for ignored and closed
+roles. Mobile selection opens the role detail with a return path to the selected
+row; long descriptions can be expanded in full. These controls do not change
+deterministic ranking or the explicit submission boundary.
+
+Canceling a discovery run stops further processing after the current browser
+step completes and ignores late results from that step. Completed local results
+are retained. Saving a role updates its recommendation and application together
+in one IndexedDB transaction, preserving any existing application progress and
+notes even when the displayed list is stale.
+
 ## Development
 
 ```bash

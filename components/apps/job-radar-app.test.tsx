@@ -198,6 +198,11 @@ describe('JobRadarApp', () => {
     expect(screen.getByRole('navigation', { name: 'Job workspace navigation' }).querySelectorAll('a')).toHaveLength(7)
     expect(screen.getByRole('link', { name: /Start setup/ })).toHaveAttribute('href', '/en/jobs/setup')
     expect(screen.queryByRole('button', { name: 'Start Agent' })).not.toBeInTheDocument()
+    expect(screen.getByText('Your next opportunity starts here')).toBeVisible()
+    expect(screen.queryByText(/Agent is advancing/)).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open settings' })).toHaveAttribute('href', '/en/jobs/settings')
+    expect(screen.getByRole('link', { name: 'Job preferences' })).toHaveAttribute('href', '/en/jobs/preferences')
+    expect(screen.getByRole('link', { name: 'Today' })).toHaveAttribute('aria-current', 'page')
   })
 
   it('shows content-free BOSS adapter diagnostics in preferences', async () => {

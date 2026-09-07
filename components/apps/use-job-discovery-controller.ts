@@ -118,11 +118,13 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
         const jobsByExternalId = new Map<string, BrowserBossJob>()
         for (const title of profile.titles.slice(0, 3)) {
           const searchResult = await searchBossBrowserJobs({ window, query: title, timeoutMs: 15_000 })
+          controller.signal.throwIfAborted()
           for (const job of searchResult.jobs ?? []) jobsByExternalId.set(job.externalId, job)
           if (controller.signal.aborted || generationRef.current !== generation) return
         }
         if (jobsByExternalId.size === 0) {
           const existingResult = await collectBossBrowserJobs({ window, timeoutMs: 3_000 })
+          controller.signal.throwIfAborted()
           for (const job of existingResult.jobs ?? []) jobsByExternalId.set(job.externalId, job)
         }
         if (jobsByExternalId.size > 0) {
@@ -145,8 +147,10 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
           }
         }
       })
+      controller.signal.throwIfAborted()
       if (generationRef.current !== generation) return
       await scoreCurrentJobPostings({ store: current.store, profile, sourceDraftId: activeDraft.id })
+      controller.signal.throwIfAborted()
       const queueResult = await queueBossCandidates({
         store: current.store,
         sourceDraftId: activeDraft.id,
@@ -154,6 +158,7 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
         maximumCandidates: current.preferences.dailyContactLimit,
         now: new Date().toISOString()
       })
+      controller.signal.throwIfAborted()
       const analysisResult = await analyzeBossCandidateQueue({
         store: current.store,
         sourceDraftId: activeDraft.id,
@@ -167,6 +172,7 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
           signal
         })
       })
+      controller.signal.throwIfAborted()
       if (options.managed || current.preferences.autonomy === 'autopilot') {
         await prepareBossCandidateResumeVariants({
           store: current.store,
@@ -176,6 +182,7 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
           now: () => new Date().toISOString()
         })
       }
+      controller.signal.throwIfAborted()
       const totals = result.summaries.reduce((summary, source) => ({
         added: summary.added + source.newCount,
         updated: summary.updated + source.updatedCount,
@@ -270,20 +277,22 @@ export function useJobDiscoveryController(input: DiscoveryInput) {
   const decide = useCallback(async (recommendation: JobRecommendation, decision: 'saved' | 'ignored') => {
     const current = inputRef.current
     const now = new Date().toISOString()
-    await current.store.put('jobRecommendations', { ...recommendation, decision, updatedAt: now })
-    if (decision === 'saved' && current.activeDraft) {
-      const id = createStableJobDomainId('application', [recommendation.postingId, current.activeDraft.id])
-      const existing = current.applications.find((application) => application.id === id)
-      await current.store.put('applicationRecords', existing ?? {
-        id,
-        postingId: recommendation.postingId,
-        sourceDraftId: current.activeDraft.id,
-        status: 'saved',
-        notes: '',
-        createdAt: now,
-        updatedAt: now
-      })
-    }
+    await current.store.transaction(['jobRecommendations', 'applicationRecords'], 'readwrite', async (transaction) => {
+      await transaction.put('jobRecommendations', { ...recommendation, decision, updatedAt: now })
+      if (decision === 'saved' && current.activeDraft) {
+        const id = createStableJobDomainId('application', [recommendation.postingId, current.activeDraft.id])
+        const existing = await transaction.get('applicationRecords', id)
+        await transaction.put('applicationRecords', existing ?? {
+          id,
+          postingId: recommendation.postingId,
+          sourceDraftId: current.activeDraft.id,
+          status: 'saved',
+          notes: '',
+          createdAt: now,
+          updatedAt: now
+        })
+      }
+    })
     await current.reload()
   }, [])
 
